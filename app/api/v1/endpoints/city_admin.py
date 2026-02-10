@@ -180,7 +180,7 @@ async def list_city_tickets(
             query = query.filter(Ticket.priority == priority_enum)
         except ValueError:
             pass
-
+    
     if partner_id:
         query = query.filter(Ticket.organization_id == partner_id)
 

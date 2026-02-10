@@ -243,7 +243,7 @@ async def get_warranty_abuse_signals(
     """Identify states with unusually high warranty usage"""
     if not current_user.country_id:
         raise HTTPException(status_code=400, detail="User must be assigned to a country")
-
+    
     states = db.query(State).filter(State.country_id == current_user.country_id).all()
     alerts = []
     for state in states:
@@ -390,7 +390,7 @@ async def get_partner_score_predictions(
             "nps": round(nps, 2),
             "predicted_score": score
         })
-
+    
     return results
 
 

@@ -349,7 +349,7 @@ async def get_ticket(
         }
         for c in follow_up_comments
     ]
-
+    
     return {
         "id": ticket.id,
         "ticket_number": ticket.ticket_number,
@@ -595,7 +595,7 @@ async def start_ticket(
                 action_url=f"/customer/ticket/{ticket.id}"
             )
             db.add(notification)
-
+    
     db.commit()
     
     return {"message": "Ticket started"}
@@ -674,7 +674,7 @@ async def resolve_ticket(
     resolution_photos = resolution_data.get("resolution_photos") or []
     customer_signature = resolution_data.get("customer_signature")
     customer_otp_verified = bool(resolution_data.get("customer_otp_verified"))
-
+    
     ticket.status = TicketStatus.RESOLVED
     ticket.resolution_notes = resolution_notes
     ticket.resolution_photos = resolution_photos
