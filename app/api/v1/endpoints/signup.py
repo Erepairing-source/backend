@@ -45,8 +45,14 @@ def _resolve_country_id(db: Session, signup_data: dict) -> int:
     country = db.query(Country).filter(Country.code == code).first()
     if country:
         return country.id
-    # Create India (or other) from static
+    # Create India (or other) from static; avoid duplicate if India exists by name but code was missing/different
     if code == "IN":
+        country = db.query(Country).filter(Country.name == "India").first()
+        if country:
+            return country.id
+        country = db.query(Country).filter(Country.code == "IN").first()
+        if country:
+            return country.id
         country = Country(name="India", code="IN")
         db.add(country)
         db.flush()
@@ -79,6 +85,10 @@ def _resolve_state_id(db: Session, signup_data: dict, country_id: int) -> int:
         ).first()
         if state:
             return state.id
+        # Avoid duplicate: state may exist by name with different/missing code
+        state = db.query(State).filter(State.country_id == country_id, State.name == name).first()
+        if state:
+            return state.id
         # Create from INDIA_STATES
         for s in INDIA_STATES:
             if (s.get("name") == name) or ((s.get("code") or "").upper() == (code or "")):
@@ -108,10 +118,13 @@ def _resolve_city_id(db: Session, signup_data: dict, state_id: int) -> int:
     city = db.query(City).filter(City.state_id == state_id, City.name == name).first()
     if city:
         return city.id
-    # Create from INDIA_CITIES_BY_STATE (need state name)
     state = db.query(State).filter(State.id == state_id).first()
-    if state and state.name and state.name in INDIA_CITIES_BY_STATE:
-        if name in INDIA_CITIES_BY_STATE[state.name]:
+    if state:
+        # Avoid duplicate: city may exist under another state row (same country)
+        city = db.query(City).join(State).filter(State.country_id == state.country_id, City.name == name).first()
+        if city:
+            return city.id
+        if state.name and state.name in INDIA_CITIES_BY_STATE and name in INDIA_CITIES_BY_STATE[state.name]:
             city = City(name=name, state_id=state_id)
             db.add(city)
             db.flush()
