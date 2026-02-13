@@ -62,28 +62,20 @@ No external API or in-memory list is used for these admin dropdowns/lists; they 
 
 The **admin** side does not call the locations API or static data; it only reads from the DB. So to show real state/city names you must **populate** `countries`, `states`, and `cities` first.
 
-**Option A – From local JSON (no API key)**
+**Single source of truth for India:** `app/data/india_locations.py` (35 states, all cities; UP 75+). All India location logic uses this module.
 
-- Use the script that loads **India** states and districts from `app/data/india_states_cities.json` and inserts them into `countries`, `states`, and `cities` (districts are stored as cities).
-- Run from the **backend** directory:
-  - `python scripts/populate_locations_from_json.py`
-- After this, Country Admin will see all Indian states and State Admin will see all districts (as cities) for their state.
+**To populate the DB (recommended):**
 
-**Option B – From external API**
-
-- Use `scripts/populate_locations_from_api.py` with `COUNTRY_STATE_CITY_API_KEY` set.
-- This fills the same tables from the CountryStateCity API so admins again see real data from the DB.
-
-**Option C – Initial seed only**
-
-- `scripts/init_db.py` creates India and a **small** set of states/cities (e.g. a few major cities per state). Good for a minimal seed; for full coverage use Option A or B.
+- Run from the **backend** directory (set `DATABASE_URL` for AWS RDS):
+  - `python scripts/seed_india_locations.py` – India only (country IN, 35 states, all cities).
+  - `python scripts/seed_all.py` – Full seed (India + plans + platform admin + org admin + subscription).
+- These scripts use `app.data.india_locations`. After running, Country Admin and State Admin see full state/city data from the DB.
 
 ---
 
 ## 5. Locations API vs Admin Dashboards
 
-- **`/api/v1/locations/`** (countries, states, cities) can return data from **external APIs or static lists** (e.g. for signup/forms). That is separate from the admin logic.
-- **Country Admin** and **State Admin** dashboards **do not** use that API; they only use the DB. So:
-  - Real state names in country = must be in `states`.
-  - Real city names in state = must be in `cities`.
-  - Run one of the populate scripts above to get real data into the DB.
+- **`/api/v1/locations/`** (countries, states, cities): **India** data comes from `app.data.india_locations` (static in code); if DB is seeded, API returns from DB first. No external India API.
+- **Country Admin** uses `INDIA_STATES_FULL` from `app.data.india_locations` for India state count/list; state/city metrics come from the DB.
+- **State Admin** uses `INDIA_CITIES_BY_STATE` from `app.data.india_locations` for India city list when state is India; metrics come from the DB.
+- Run `seed_india_locations.py` or `seed_all.py` to populate the DB so admins and signup have real IDs.

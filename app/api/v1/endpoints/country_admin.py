@@ -16,19 +16,8 @@ from app.models.location import Country, State, City
 from app.models.organization import Organization, OrganizationHierarchy
 from app.models.device import Device
 
-# Full list of Indian states (so Country Admin always shows all states for India)
-INDIA_STATES_FULL = [
-    {"name": "Andhra Pradesh"}, {"name": "Arunachal Pradesh"}, {"name": "Assam"}, {"name": "Bihar"},
-    {"name": "Chhattisgarh"}, {"name": "Goa"}, {"name": "Gujarat"}, {"name": "Haryana"},
-    {"name": "Himachal Pradesh"}, {"name": "Jharkhand"}, {"name": "Karnataka"}, {"name": "Kerala"},
-    {"name": "Madhya Pradesh"}, {"name": "Maharashtra"}, {"name": "Manipur"}, {"name": "Meghalaya"},
-    {"name": "Mizoram"}, {"name": "Nagaland"}, {"name": "Odisha"}, {"name": "Punjab"},
-    {"name": "Rajasthan"}, {"name": "Sikkim"}, {"name": "Tamil Nadu"}, {"name": "Telangana"},
-    {"name": "Tripura"}, {"name": "Uttar Pradesh"}, {"name": "Uttarakhand"}, {"name": "West Bengal"},
-    {"name": "Andaman and Nicobar Islands"}, {"name": "Chandigarh"},
-    {"name": "Dadra and Nagar Haveli and Daman and Diu"}, {"name": "Delhi"},
-    {"name": "Jammu and Kashmir"}, {"name": "Ladakh"}, {"name": "Lakshadweep"}, {"name": "Puducherry"},
-]
+# Full list of Indian states (35) – same source as locations (app.data.india_locations)
+from app.data.india_locations import INDIA_STATES_FULL
 from app.models.inventory import Inventory
 from typing import List
 

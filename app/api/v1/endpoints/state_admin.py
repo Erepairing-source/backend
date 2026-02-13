@@ -1,8 +1,6 @@
 """
 State Admin endpoints
 """
-import os
-import json
 from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from typing import Optional, List
@@ -15,23 +13,20 @@ from datetime import datetime, timedelta, timezone
 from app.models.user import User, UserRole
 from app.models.ticket import Ticket, TicketStatus, TicketComment
 from app.models.location import City, State, Country
-
-# Path to India states/cities JSON (districts used as cities)
-_INDIA_JSON_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "..", "data", "india_states_cities.json")
+from app.data.india_locations import INDIA_CITIES_BY_STATE
 
 
-def _india_districts_for_state(state_name: str) -> List[str]:
-    """Return list of district names for an Indian state from JSON. Empty if not found."""
-    if not state_name or not os.path.exists(_INDIA_JSON_PATH):
+def _india_cities_for_state(state_name: str) -> List[str]:
+    """Return list of city names for an Indian state from app.data.india_locations. Empty if not found."""
+    if not state_name:
         return []
-    try:
-        with open(_INDIA_JSON_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        for s in data.get("states") or []:
-            if (s.get("name") or "").strip().lower() == state_name.strip().lower():
-                return list(s.get("districts") or [])
-    except Exception:
-        pass
+    key = state_name.strip()
+    if key in INDIA_CITIES_BY_STATE:
+        return list(INDIA_CITIES_BY_STATE[key])
+    key_lower = key.lower()
+    for k, cities in INDIA_CITIES_BY_STATE.items():
+        if k.strip().lower() == key_lower:
+            return list(cities)
     return []
 from app.models.device import Device
 from app.models.inventory import Inventory, InventoryTransaction, Part
@@ -146,7 +141,7 @@ async def get_state_dashboard(
             code = (country.code or "").strip().upper()
             name = (country.name or "").strip().lower()
             if code in ("IN", "IND") or name == "india" or "india" in name:
-                full_districts = _india_districts_for_state(state_record.name)
+                full_districts = _india_cities_for_state(state_record.name)
                 if full_districts:
                     total_cities_display = len(full_districts)
     
@@ -226,7 +221,7 @@ async def get_state_cities(
             name = (country.name or "").strip().lower()
             if code in ("IN", "IND") or name == "india" or "india" in name:
                 is_india = True
-                full_districts = _india_districts_for_state(state_record.name)
+                full_districts = _india_cities_for_state(state_record.name)
 
     if is_india and full_districts:
         db_city_by_name = {c.name.strip().lower(): c for c in cities}
