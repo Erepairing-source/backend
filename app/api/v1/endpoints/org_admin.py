@@ -20,6 +20,7 @@ except ImportError:
 from app.core.database import get_db
 from app.core.permissions import require_role
 from app.core.data_isolation import check_organization_access, enforce_organization_isolation
+from app.core.location_resolution import resolve_location_ids, int_or_none
 from app.models.user import User, UserRole
 from app.models.organization import Organization, OrganizationHierarchy
 from app.models.product import Product, ProductModel, ProductCategory
@@ -47,7 +48,11 @@ async def get_org_admin_dashboard(
         raise HTTPException(status_code=400, detail="User must be associated with an organization")
     
     org_id = current_user.organization_id
-    org = db.query(Organization).filter(Organization.id == org_id).first()
+    org = db.query(Organization).options(
+        joinedload(Organization.country),
+        joinedload(Organization.state),
+        joinedload(Organization.city),
+    ).filter(Organization.id == org_id).first()
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
     
@@ -109,7 +114,15 @@ async def get_org_admin_dashboard(
                 "name": org.name,
                 "org_type": org.org_type.value if org.org_type else None,
                 "email": org.email,
-                "is_active": org.is_active
+                "phone": org.phone,
+                "address": org.address,
+                "is_active": org.is_active,
+                "country_id": org.country_id,
+                "state_id": org.state_id,
+                "city_id": org.city_id,
+                "country_name": org.country.name if org.country else None,
+                "state_name": org.state.name if org.state else None,
+                "city_name": org.city.name if org.city else None,
             },
             "stats": {
                 "total_tickets": total_tickets,
@@ -2511,28 +2524,39 @@ async def create_inventory(
             except (ValueError, TypeError):
                 return None
         
-        # Clean location IDs - explicitly handle empty strings
+        # Clean location IDs - use numeric ids when present, else resolve from code/name (same as signup/locations API)
         country_id_raw = inventory_data.get("country_id")
         state_id_raw = inventory_data.get("state_id")
         city_id_raw = inventory_data.get("city_id")
-        
         country_id = clean_id(country_id_raw)
         state_id = clean_id(state_id_raw)
         city_id = clean_id(city_id_raw)
 
+        if city_id:
+            city = db.query(City).filter(City.id == city_id).first()
+            if city:
+                state = db.query(State).filter(State.id == city.state_id).first()
+                if state:
+                    if state_id and state_id != city.state_id:
+                        raise HTTPException(status_code=400, detail="state_id does not match city_id")
+                    state_id = city.state_id
+                    country_id = state.country_id
+                    # use resolved country_id, state_id, city_id below
+            else:
+                city_id = None
+        if not city_id:
+            # Resolve from country_code / state_code|state_name / city_name (same locations API as signup)
+            has_code_name = (
+                (inventory_data.get("country_code") or "").strip()
+                or (inventory_data.get("state_code") or inventory_data.get("state_name") or "").strip()
+                or (inventory_data.get("city_name") or "").strip()
+            )
+            if has_code_name:
+                country_id, state_id, city_id = resolve_location_ids(db, inventory_data)
+            else:
+                raise HTTPException(status_code=400, detail="city_id is required (or provide country_code, state_code/state_name, city_name)")
         if not city_id:
             raise HTTPException(status_code=400, detail="city_id is required")
-
-        city = db.query(City).filter(City.id == city_id).first()
-        if not city:
-            raise HTTPException(status_code=404, detail="City not found")
-        state = db.query(State).filter(State.id == city.state_id).first()
-        if not state:
-            raise HTTPException(status_code=404, detail="State not found for city")
-        if state_id and state_id != city.state_id:
-            raise HTTPException(status_code=400, detail="state_id does not match city_id")
-        state_id = city.state_id
-        country_id = state.country_id
         
         # Ensure part_id is an integer
         try:

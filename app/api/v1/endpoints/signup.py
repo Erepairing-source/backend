@@ -1,5 +1,7 @@
 """
 Public signup endpoint for organizations
+Accepts country_id/state_id/city_id (numeric) OR country_code/state_code/state_name/city_name
+so signup works when locations API returns id: null (e.g. India-only static data before seed).
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Body
 from sqlalchemy.orm import Session
@@ -11,8 +13,113 @@ from app.core.config import settings
 from app.models.organization import Organization, OrganizationType
 from app.models.user import User, UserRole
 from app.models.subscription import Plan, Subscription, BillingPeriod, Vendor, VendorOrganization
+from app.models.location import Country, State, City
+from app.data.india_locations import INDIA_STATES, INDIA_CITIES_BY_STATE, state_code_to_name
 
 router = APIRouter()
+
+
+def _int_or_none(v):
+    if v is None:
+        return None
+    try:
+        n = int(v)
+        return n if n else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_country_id(db: Session, signup_data: dict) -> int:
+    """Resolve country_id from signup_data (country_id or country_code)."""
+    cid = _int_or_none(signup_data.get("country_id"))
+    if cid:
+        country = db.query(Country).filter(Country.id == cid).first()
+        if country:
+            return country.id
+    code = (signup_data.get("country_code") or "").strip().upper() or None
+    if not code:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing location: provide country_id or country_code (e.g. IN)"
+        )
+    country = db.query(Country).filter(Country.code == code).first()
+    if country:
+        return country.id
+    # Create India (or other) from static
+    if code == "IN":
+        country = Country(name="India", code="IN")
+        db.add(country)
+        db.flush()
+        return country.id
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail=f"Country not found for code: {code}. Only India (IN) can be auto-created."
+    )
+
+
+def _resolve_state_id(db: Session, signup_data: dict, country_id: int) -> int:
+    """Resolve state_id from signup_data (state_id or state_code or state_name)."""
+    sid = _int_or_none(signup_data.get("state_id"))
+    if sid:
+        state = db.query(State).filter(State.id == sid, State.country_id == country_id).first()
+        if state:
+            return state.id
+    code = (signup_data.get("state_code") or "").strip().upper() or None
+    name = (signup_data.get("state_name") or "").strip() or None
+    if not code and not name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing location: provide state_id or state_code/state_name"
+        )
+    if code and not name:
+        name = state_code_to_name(code)
+    if name:
+        state = db.query(State).filter(State.country_id == country_id).filter(
+            (State.name == name) | (State.code == (code or name))
+        ).first()
+        if state:
+            return state.id
+        # Create from INDIA_STATES
+        for s in INDIA_STATES:
+            if (s.get("name") == name) or ((s.get("code") or "").upper() == (code or "")):
+                state = State(name=s["name"], code=s.get("code"), country_id=country_id)
+                db.add(state)
+                db.flush()
+                return state.id
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="State not found for given state_code/state_name"
+    )
+
+
+def _resolve_city_id(db: Session, signup_data: dict, state_id: int) -> int:
+    """Resolve city_id from signup_data (city_id or city_name)."""
+    cid = _int_or_none(signup_data.get("city_id"))
+    if cid:
+        city = db.query(City).filter(City.id == cid, City.state_id == state_id).first()
+        if city:
+            return city.id
+    name = (signup_data.get("city_name") or "").strip() or None
+    if not name:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing location: provide city_id or city_name"
+        )
+    city = db.query(City).filter(City.state_id == state_id, City.name == name).first()
+    if city:
+        return city.id
+    # Create from INDIA_CITIES_BY_STATE (need state name)
+    state = db.query(State).filter(State.id == state_id).first()
+    if state and state.name and state.name in INDIA_CITIES_BY_STATE:
+        if name in INDIA_CITIES_BY_STATE[state.name]:
+            city = City(name=name, state_id=state_id)
+            db.add(city)
+            db.flush()
+            return city.id
+    raise HTTPException(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        detail="City not found for given city_name"
+    )
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
@@ -23,21 +130,36 @@ async def signup_organization(
     """
     Public endpoint for organization signup
     Creates organization, admin user, and subscription
+    Accepts country_id/state_id/city_id OR country_code/state_code/state_name/city_name so
+    locations work when API returns id: null (e.g. India-only before seed).
     Optionally links to vendor if vendor_code or vendor_id is provided
     """
-    # Validate required fields
-    required_fields = [
-        "org_name", "org_type", "org_email", "org_phone", "country_id", 
-        "state_id", "city_id", "admin_name", "admin_email", "admin_phone", 
+    # Required fields (location can be id or code/name)
+    required_core = [
+        "org_name", "org_type", "org_email", "org_phone",
+        "admin_name", "admin_email", "admin_phone",
         "admin_password", "plan_id", "billing_period"
     ]
-    
-    for field in required_fields:
-        if field not in signup_data or not signup_data[field]:
+    for field in required_core:
+        if field not in signup_data or signup_data[field] is None or signup_data[field] == "":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Missing required field: {field}"
             )
+    # Location: need either ids or code/name
+    has_country_id = _int_or_none(signup_data.get("country_id")) is not None
+    has_country_code = (signup_data.get("country_code") or "").strip()
+    if not has_country_id and not has_country_code:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Missing location: provide country_id or country_code (e.g. IN)"
+        )
+    has_state = _int_or_none(signup_data.get("state_id")) is not None or (signup_data.get("state_code") or "").strip() or (signup_data.get("state_name") or "").strip()
+    if not has_state:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing location: provide state_id or state_code/state_name")
+    has_city = _int_or_none(signup_data.get("city_id")) is not None or (signup_data.get("city_name") or "").strip()
+    if not has_city:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing location: provide city_id or city_name")
     
     # Check if organization email already exists
     existing_org = db.query(Organization).filter(
@@ -79,6 +201,11 @@ async def signup_organization(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid or inactive plan selected"
         )
+
+    # Resolve location ids (from id or code/name) so DB gets valid FKs
+    country_id = _resolve_country_id(db, signup_data)
+    state_id = _resolve_state_id(db, signup_data, country_id)
+    city_id = _resolve_city_id(db, signup_data, state_id)
     
     # Create organization
     organization = Organization(
@@ -87,9 +214,9 @@ async def signup_organization(
         email=signup_data["org_email"],
         phone=signup_data["org_phone"],
         address=signup_data.get("org_address", ""),
-        country_id=signup_data["country_id"],
-        state_id=signup_data["state_id"],
-        city_id=signup_data["city_id"],
+        country_id=country_id,
+        state_id=state_id,
+        city_id=city_id,
         is_active=True
     )
     
@@ -283,7 +410,7 @@ async def signup_organization(
     # Link subscription to organization
     organization.subscription_id = subscription.id
     
-    # Create admin user
+    # Create admin user (use resolved location ids)
     admin_user = User(
         email=signup_data["admin_email"],
         phone=signup_data["admin_phone"],
@@ -291,9 +418,9 @@ async def signup_organization(
         full_name=signup_data["admin_name"],
         role=UserRole.ORGANIZATION_ADMIN,
         organization_id=organization.id,
-        country_id=signup_data["country_id"],
-        state_id=signup_data["state_id"],
-        city_id=signup_data["city_id"],
+        country_id=country_id,
+        state_id=state_id,
+        city_id=city_id,
         is_active=True,
         is_verified=False  # Will need email verification
     )
