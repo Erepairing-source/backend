@@ -15,18 +15,33 @@ _BACKEND_ENV = Path(__file__).resolve().parent.parent.parent / ".env"
 
 
 def _parse_list(value: Union[str, List[str]]) -> List[str]:
-    """Parse env list: comma-separated string or list. Used for CORS_ORIGINS and ALLOWED_HOSTS."""
+    """
+    Parse env list for CORS_ORIGINS / ALLOWED_HOSTS.
+    Accepts:
+    - JSON array: ["https://a.com","https://b.com"]
+    - Comma-separated: https://a.com,https://b.com
+    """
     if isinstance(value, list):
-        return value
+        return [str(x).strip() for x in value if str(x).strip()]
     if isinstance(value, str):
-        return [x.strip() for x in value.split(",") if x.strip()]
+        s = value.strip()
+        if not s:
+            return []
+        if s.startswith("["):
+            try:
+                parsed = json.loads(s)
+                if isinstance(parsed, list):
+                    return [str(x).strip() for x in parsed if str(x).strip()]
+            except json.JSONDecodeError:
+                pass
+        return [x.strip() for x in s.split(",") if x.strip()]
     return []
 
 
 def _apply_backend_dotenv() -> None:
     """
     Load backend/.env into os.environ so SMTP works regardless of process cwd.
-    CORS_ORIGINS / ALLOWED_HOSTS must be JSON arrays for pydantic List fields — we convert from comma-separated.
+    CORS_ORIGINS / ALLOWED_HOSTS: JSON arrays or comma-separated lists (see _parse_list).
     """
     if not _BACKEND_ENV.is_file():
         return
