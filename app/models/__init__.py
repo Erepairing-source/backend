@@ -14,6 +14,10 @@ from app.models.sla_policy import SLAPolicy, ServicePolicy, SLAType
 from app.models.escalation import Escalation, EscalationLevel, EscalationType, EscalationStatus
 from app.models.integration import Integration, IntegrationType, IntegrationStatus
 from app.models.notification import Notification, NotificationType, NotificationChannel, NotificationStatus
+from app.models.password_set_token import PasswordSetToken
+from app.models.ticket_otp import TicketOTP, TicketOTPPurpose
+from app.models.ticket_start_approval import TicketStartApproval
+from app.models.reminder_log import ReminderLog
 
 __all__ = [
     "User",
@@ -65,6 +69,11 @@ __all__ = [
     "NotificationType",
     "NotificationChannel",
     "NotificationStatus",
+"PasswordSetToken",
+    "TicketOTP",
+    "TicketOTPPurpose",
+    "TicketStartApproval",
+    "ReminderLog",
 ]
 
 

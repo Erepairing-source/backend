@@ -3,15 +3,27 @@ Ticket endpoints
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Body, Response, UploadFile, File
 from sqlalchemy.orm import Session
-from typing import List, Optional
-from datetime import datetime, timedelta
+from typing import List, Optional, Tuple
+from datetime import datetime, timedelta, timezone
 import os
+import random
+import string
 import uuid
 
 from app.core.database import get_db
+from app.core.config import settings
+from app.core.email import (
+    send_otp_email,
+    send_ticket_assigned_email,
+    send_ticket_created_email,
+    send_ticket_resolved_email,
+    send_ticket_work_started_email,
+)
 from app.core.permissions import get_current_user, require_role
 from app.models.user import User, UserRole
 from app.models.ticket import Ticket, TicketStatus, TicketPriority, TicketComment
+from app.models.ticket_otp import TicketOTP
+from app.models.ticket_start_approval import TicketStartApproval
 from app.models.device import Device
 from app.models.inventory import Part
 from app.models.escalation import Escalation, EscalationLevel, EscalationType
@@ -24,8 +36,58 @@ from app.models.sla_policy import SLAType
 
 router = APIRouter()
 triage_service = CaseTriageService()
+
+
+def _ticket_customer_portal_url(ticket_id: int) -> str:
+    return f"{settings.FRONTEND_URL.rstrip('/')}/customer/ticket/{ticket_id}"
+
+
+def _customer_email_and_name(db: Session, ticket: Ticket) -> Tuple[Optional[str], Optional[str]]:
+    """Email and display name for the ticket's customer, if any."""
+    if not ticket.customer_id:
+        return None, None
+    u = db.query(User).filter(User.id == ticket.customer_id).first()
+    if not u or not u.email:
+        return None, None
+    return u.email, u.full_name
 sla_service = SLABreachPredictionService()
 sentiment_service = SentimentAnalyzerService()
+
+
+def _generate_otp(length: int = 6) -> str:
+    return "".join(random.choices(string.digits, k=length))
+
+
+def _get_start_approval_required_and_approved(db: Session, ticket: Ticket) -> tuple:
+    """Return (approval_required: bool, approved: bool)."""
+    latest = (
+        db.query(TicketStartApproval)
+        .filter(TicketStartApproval.ticket_id == ticket.id)
+        .order_by(TicketStartApproval.created_at.desc())
+        .first()
+    )
+    if not latest:
+        return (False, True)  # No approval requested → allow start
+    return (True, latest.status == "approved")
+
+
+def _ticket_start_approval_for_response(db: Session, ticket_id: int) -> Optional[dict]:
+    """Return latest start approval for ticket for API response."""
+    latest = (
+        db.query(TicketStartApproval)
+        .filter(TicketStartApproval.ticket_id == ticket_id)
+        .order_by(TicketStartApproval.created_at.desc())
+        .first()
+    )
+    if not latest:
+        return None
+    return {
+        "id": latest.id,
+        "status": latest.status,
+        "approval_level": latest.approval_level,
+        "approved_at": latest.approved_at.isoformat() if latest.approved_at else None,
+        "created_at": latest.created_at.isoformat() if latest.created_at else None,
+    }
 
 
 def build_status_timeline(ticket: Ticket, follow_up_comments: Optional[List[TicketComment]] = None):
@@ -217,6 +279,26 @@ async def create_ticket(
     
     db.commit()
     db.refresh(ticket)
+
+    # Email customer full ticket summary when SMTP is configured
+    cust_email, cust_name = _customer_email_and_name(db, ticket)
+    if cust_email:
+        dev_label = None
+        if device:
+            parts = [device.model_number, device.serial_number]
+            dev_label = " — ".join(p for p in parts if p) or None
+        send_ticket_created_email(
+            to_email=cust_email,
+            ticket_number=ticket.ticket_number,
+            issue_description=issue_description,
+            priority=ticket.priority.value if ticket.priority else "medium",
+            service_address=ticket.service_address,
+            sla_deadline_iso=ticket.sla_deadline.isoformat() if ticket.sla_deadline else None,
+            ticket_link=_ticket_customer_portal_url(ticket.id),
+            full_name=cust_name,
+            issue_category=ticket.issue_category or ticket.ai_triage_category,
+            device_label=dev_label,
+        )
     
     return {
         "id": ticket.id,
@@ -427,7 +509,8 @@ async def get_ticket(
                 "follow_up_preferred_date": t.follow_up_preferred_date.isoformat() if t.follow_up_preferred_date else None
             }
             for t in ticket.follow_up_tickets
-        ] if ticket.follow_up_tickets else []
+        ] if ticket.follow_up_tickets else [],
+        "start_approval": _ticket_start_approval_for_response(db, ticket.id),
     }
 
 
@@ -530,9 +613,21 @@ async def assign_ticket(
             message=f"Your ticket {ticket.ticket_number} has been assigned to an engineer.",
             notification_type=NotificationType.TICKET_ASSIGNED
         )
-    
+        assigned_engineer_name = engineer.full_name
+
     db.commit()
-    
+
+    if engineer_id:
+        ce, cname = _customer_email_and_name(db, ticket)
+        if ce:
+            send_ticket_assigned_email(
+                ce,
+                ticket.ticket_number,
+                assigned_engineer_name,
+                _ticket_customer_portal_url(ticket.id),
+                cname,
+            )
+
     return {"message": "Ticket assigned successfully"}
 
 
@@ -597,8 +692,181 @@ async def start_ticket(
             db.add(notification)
     
     db.commit()
-    
+
+    ce, cname = _customer_email_and_name(db, ticket)
+    if ce:
+        eta_note = None
+        if ticket.engineer_eta_start or ticket.engineer_eta_end:
+            parts = []
+            if ticket.engineer_eta_start:
+                parts.append(f"ETA start: {ticket.engineer_eta_start.isoformat()}")
+            if ticket.engineer_eta_end:
+                parts.append(f"ETA end: {ticket.engineer_eta_end.isoformat()}")
+            eta_note = "\n".join(parts)
+        send_ticket_work_started_email(
+            ce,
+            ticket.ticket_number,
+            _ticket_customer_portal_url(ticket.id),
+            cname,
+            eta_note,
+        )
+
     return {"message": "Ticket started"}
+
+
+@router.post("/{ticket_id}/request-start-otp")
+async def request_start_otp(
+    ticket_id: int,
+    current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER])),
+    db: Session = Depends(get_db)
+):
+    """Engineer requests OTP to start service. OTP is sent to customer email; engineer enters it in verify-start-otp."""
+    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if ticket.assigned_engineer_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Ticket not assigned to you")
+    if ticket.status != TicketStatus.ASSIGNED:
+        raise HTTPException(status_code=400, detail="Ticket must be in ASSIGNED status to request start OTP")
+    approval_required, approved = _get_start_approval_required_and_approved(db, ticket)
+    if approval_required and not approved:
+        raise HTTPException(
+            status_code=400,
+            detail="Start approval required from your city/state admin before you can start. Please wait for approval."
+        )
+    if not ticket.customer_id:
+        raise HTTPException(status_code=400, detail="Ticket has no customer to send OTP to")
+    customer = db.query(User).filter(User.id == ticket.customer_id).first()
+    if not customer or not customer.email:
+        raise HTTPException(status_code=400, detail="Customer email not found")
+    otp_code = _generate_otp(6)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+    otp_row = TicketOTP(
+        ticket_id=ticket.id,
+        purpose="start",
+        otp_code=otp_code,
+        expires_at=expires_at,
+    )
+    db.add(otp_row)
+    db.flush()
+    send_otp_email(
+        to_email=customer.email,
+        otp_code=otp_code,
+        purpose="start",
+        ticket_number=ticket.ticket_number,
+        full_name=customer.full_name,
+    )
+    _queue_customer_notifications(
+        db,
+        ticket,
+        title="Start OTP sent",
+        message=f"An OTP was sent to your email for ticket {ticket.ticket_number}. Share the 6-digit code with the engineer when they ask to begin service.",
+        notification_type=NotificationType.TICKET_UPDATED,
+    )
+    db.commit()
+    return {"message": "OTP sent to customer email. Ask customer for the OTP and enter it in Verify start OTP."}
+
+
+@router.post("/{ticket_id}/verify-start-otp")
+async def verify_start_otp(
+    ticket_id: int,
+    body: dict = Body(...),
+    current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER])),
+    db: Session = Depends(get_db)
+):
+    """Engineer enters OTP received from customer to verify and start the ticket."""
+    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if ticket.assigned_engineer_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Ticket not assigned to you")
+    if ticket.status != TicketStatus.ASSIGNED:
+        raise HTTPException(status_code=400, detail="Ticket must be in ASSIGNED status")
+    otp = (body.get("otp") or "").strip()
+    if not otp:
+        raise HTTPException(status_code=400, detail="otp is required")
+    now = datetime.now(timezone.utc)
+    otp_row = (
+        db.query(TicketOTP)
+        .filter(
+            TicketOTP.ticket_id == ticket.id,
+            TicketOTP.purpose == "start",
+            TicketOTP.expires_at > now,
+            TicketOTP.verified_at.is_(None),
+        )
+        .order_by(TicketOTP.expires_at.desc())
+        .first()
+    )
+    if not otp_row:
+        raise HTTPException(status_code=400, detail="No valid start OTP found. Request a new OTP.")
+    if otp_row.otp_code != otp:
+        raise HTTPException(status_code=400, detail="Invalid OTP")
+    otp_row.verified_at = now
+    ticket.status = TicketStatus.IN_PROGRESS
+    ticket.started_at = now
+    comment = TicketComment(
+        ticket_id=ticket.id,
+        user_id=current_user.id,
+        comment_text="Service started (OTP verified by engineer)",
+        comment_type="status_change",
+    )
+    db.add(comment)
+    _queue_customer_notifications(
+        db,
+        ticket,
+        title="Work started",
+        message="Your engineer has started working on your ticket.",
+        notification_type=NotificationType.TICKET_UPDATED
+    )
+    db.commit()
+    return {"message": "OTP verified. Ticket started."}
+
+
+@router.post("/{ticket_id}/request-completion-otp")
+async def request_completion_otp(
+    ticket_id: int,
+    current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER])),
+    db: Session = Depends(get_db)
+):
+    """Engineer requests OTP for completion. OTP is sent to customer; engineer enters it when resolving."""
+    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if ticket.assigned_engineer_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Ticket not assigned to you")
+    if ticket.status != TicketStatus.IN_PROGRESS and ticket.status != TicketStatus.WAITING_PARTS:
+        raise HTTPException(status_code=400, detail="Ticket must be in progress to request completion OTP")
+    if not ticket.customer_id:
+        raise HTTPException(status_code=400, detail="Ticket has no customer to send OTP to")
+    customer = db.query(User).filter(User.id == ticket.customer_id).first()
+    if not customer or not customer.email:
+        raise HTTPException(status_code=400, detail="Customer email not found")
+    otp_code = _generate_otp(6)
+    expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+    otp_row = TicketOTP(
+        ticket_id=ticket.id,
+        purpose="completion",
+        otp_code=otp_code,
+        expires_at=expires_at,
+    )
+    db.add(otp_row)
+    db.flush()
+    send_otp_email(
+        to_email=customer.email,
+        otp_code=otp_code,
+        purpose="completion",
+        ticket_number=ticket.ticket_number,
+        full_name=customer.full_name,
+    )
+    _queue_customer_notifications(
+        db,
+        ticket,
+        title="Completion OTP sent",
+        message=f"An OTP was sent to your email for ticket {ticket.ticket_number}. Share the 6-digit code with the engineer to close the visit.",
+        notification_type=NotificationType.TICKET_UPDATED,
+    )
+    db.commit()
+    return {"message": "Completion OTP sent to customer email. Enter it when submitting resolution."}
 
 
 @router.post("/{ticket_id}/eta")
@@ -674,7 +942,28 @@ async def resolve_ticket(
     resolution_photos = resolution_data.get("resolution_photos") or []
     customer_signature = resolution_data.get("customer_signature")
     customer_otp_verified = bool(resolution_data.get("customer_otp_verified"))
-    
+    otp = (resolution_data.get("otp") or "").strip()
+
+    if otp:
+        now = datetime.now(timezone.utc)
+        otp_row = (
+            db.query(TicketOTP)
+            .filter(
+                TicketOTP.ticket_id == ticket.id,
+                TicketOTP.purpose == "completion",
+                TicketOTP.expires_at > now,
+                TicketOTP.verified_at.is_(None),
+            )
+            .order_by(TicketOTP.expires_at.desc())
+            .first()
+        )
+        if not otp_row:
+            raise HTTPException(status_code=400, detail="No valid completion OTP found. Request a new OTP from Request completion OTP.")
+        if otp_row.otp_code != otp:
+            raise HTTPException(status_code=400, detail="Invalid completion OTP")
+        otp_row.verified_at = now
+        customer_otp_verified = True
+
     ticket.status = TicketStatus.RESOLVED
     ticket.resolution_notes = resolution_notes
     ticket.resolution_photos = resolution_photos
@@ -705,7 +994,17 @@ async def resolve_ticket(
     )
     
     db.commit()
-    
+
+    ce, cname = _customer_email_and_name(db, ticket)
+    if ce:
+        send_ticket_resolved_email(
+            ce,
+            ticket.ticket_number,
+            resolution_notes,
+            _ticket_customer_portal_url(ticket.id),
+            cname,
+        )
+
     return {"message": "Ticket resolved. Parts usage pending City Admin approval."}
 
 
@@ -1048,7 +1347,6 @@ async def accept_ticket(
     if ticket.status != TicketStatus.ASSIGNED:
         raise HTTPException(status_code=400, detail="Ticket must be in ASSIGNED status to accept")
     
-    # Accept the ticket - status remains ASSIGNED, engineer can now start it
     # Create a comment to log the acceptance
     from app.models.ticket import TicketComment
     comment = TicketComment(
@@ -1058,10 +1356,89 @@ async def accept_ticket(
         comment_type="acceptance"
     )
     db.add(comment)
+
+    # Hierarchy-based approval: create start approval (city level) so city admin must approve before engineer can start
+    approval = TicketStartApproval(
+        ticket_id=ticket.id,
+        requested_by_id=current_user.id,
+        approval_level="city",
+        status="pending",
+    )
+    db.add(approval)
     
     db.commit()
     
-    return {"message": "Ticket accepted successfully"}
+    return {
+        "message": "Ticket accepted successfully. Start approval has been requested from your city admin. You can request start OTP after approval.",
+        "start_approval_pending": True,
+    }
+
+
+@router.post("/{ticket_id}/approve-start")
+async def approve_start(
+    ticket_id: int,
+    current_user: User = Depends(require_role([
+        UserRole.CITY_ADMIN,
+        UserRole.STATE_ADMIN,
+        UserRole.COUNTRY_ADMIN,
+        UserRole.ORGANIZATION_ADMIN,
+    ])),
+    db: Session = Depends(get_db)
+):
+    """Hierarchy-based approval: city/state/country/org admin approves engineer to start the ticket."""
+    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    # Scope: city admin sees city tickets, state sees state, country sees country, org sees org
+    if current_user.role == UserRole.CITY_ADMIN and ticket.city_id != current_user.city_id:
+        raise HTTPException(status_code=403, detail="You can only approve tickets in your city")
+    if current_user.role == UserRole.STATE_ADMIN and ticket.state_id != current_user.state_id:
+        raise HTTPException(status_code=403, detail="You can only approve tickets in your state")
+    if current_user.role == UserRole.COUNTRY_ADMIN and ticket.country_id != current_user.country_id:
+        raise HTTPException(status_code=403, detail="You can only approve tickets in your country")
+    if current_user.role == UserRole.ORGANIZATION_ADMIN and ticket.organization_id != current_user.organization_id:
+        raise HTTPException(status_code=403, detail="You can only approve tickets in your organization")
+    latest = (
+        db.query(TicketStartApproval)
+        .filter(TicketStartApproval.ticket_id == ticket.id, TicketStartApproval.status == "pending")
+        .order_by(TicketStartApproval.created_at.desc())
+        .first()
+    )
+    if not latest:
+        raise HTTPException(status_code=400, detail="No pending start approval for this ticket")
+    now = datetime.now(timezone.utc)
+    latest.status = "approved"
+    latest.approved_by_id = current_user.id
+    latest.approved_at = now
+    comment = TicketComment(
+        ticket_id=ticket.id,
+        user_id=current_user.id,
+        comment_text=f"Start approved by {current_user.role.value}",
+        comment_type="start_approval",
+    )
+    db.add(comment)
+    db.commit()
+    return {"message": "Start approved. Engineer can now request start OTP and begin service."}
+
+
+@router.get("/{ticket_id}/start-approval-status")
+async def get_start_approval_status(
+    ticket_id: int,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Get start approval status for a ticket (for engineer UI)."""
+    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if ticket.assigned_engineer_id != current_user.id and current_user.role not in (
+        UserRole.CITY_ADMIN,
+        UserRole.STATE_ADMIN,
+        UserRole.COUNTRY_ADMIN,
+        UserRole.ORGANIZATION_ADMIN,
+    ):
+        raise HTTPException(status_code=403, detail="Access denied")
+    return _ticket_start_approval_for_response(db, ticket.id) or {"status": "not_required"}
 
 
 @router.post("/{ticket_id}/reject")

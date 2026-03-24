@@ -42,6 +42,26 @@ def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
 
+# Placeholder hash for users who have not set password yet (signup → email link flow).
+# Login rejects users whose password_hash equals this.
+PENDING_PASSWORD_PLACEHOLDER = "PENDING_SET_PASSWORD"
+
+
+def get_pending_password_hash() -> str:
+    """Return hash used for users who must set password via email link."""
+    return get_password_hash(PENDING_PASSWORD_PLACEHOLDER)
+
+
+def is_pending_password(user_password_hash: str) -> bool:
+    """Return True if user has not set password yet (placeholder hash)."""
+    if not user_password_hash:
+        return True
+    try:
+        return pwd_context.verify(PENDING_PASSWORD_PLACEHOLDER, user_password_hash)
+    except Exception:
+        return False
+
+
 def create_access_token(data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
     """Create a JWT access token"""
     to_encode = data.copy()

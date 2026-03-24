@@ -2,14 +2,19 @@
 Public signup endpoint for organizations
 Accepts country_id/state_id/city_id (numeric) OR country_code/state_code/state_name/city_name
 so signup works when locations API returns id: null (e.g. India-only static data before seed).
+Password: optional. If omitted, a set-password link is sent by email (one-time, expires after use).
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Body
-from sqlalchemy.orm import Session
 from datetime import datetime, timedelta, timezone
 
+from fastapi import APIRouter, Depends, HTTPException, status, Body
+from sqlalchemy.orm import Session
+
 from app.core.database import get_db
-from app.core.security import get_password_hash, create_access_token
+from app.core.security import get_password_hash, create_access_token, get_pending_password_hash
 from app.core.config import settings
+from app.core.password_set_email import create_and_send_set_password_token
+from app.core.email_verification import create_email_verification_otp
+from app.core.email import send_email_verification_otp
 from app.models.organization import Organization, OrganizationType
 from app.models.user import User, UserRole
 from app.models.subscription import Plan, Subscription, BillingPeriod, Vendor, VendorOrganization
@@ -147,11 +152,11 @@ async def signup_organization(
     locations work when API returns id: null (e.g. India-only before seed).
     Optionally links to vendor if vendor_code or vendor_id is provided
     """
-    # Required fields (location can be id or code/name)
+    # Required fields (location can be id or code/name). admin_password is optional; if omitted, set-password email is sent.
     required_core = [
         "org_name", "org_type", "org_email", "org_phone",
         "admin_name", "admin_email", "admin_phone",
-        "admin_password", "plan_id", "billing_period"
+        "plan_id", "billing_period"
     ]
     for field in required_core:
         if field not in signup_data or signup_data[field] is None or signup_data[field] == "":
@@ -423,11 +428,18 @@ async def signup_organization(
     # Link subscription to organization
     organization.subscription_id = subscription.id
     
+    # Password: if provided use it; otherwise placeholder and send set-password email
+    use_password_email = not signup_data.get("admin_password") or not str(signup_data.get("admin_password", "")).strip()
+    if use_password_email:
+        password_hash = get_pending_password_hash()
+    else:
+        password_hash = get_password_hash(signup_data["admin_password"])
+
     # Create admin user (use resolved location ids)
     admin_user = User(
         email=signup_data["admin_email"],
         phone=signup_data["admin_phone"],
-        password_hash=get_password_hash(signup_data["admin_password"]),
+        password_hash=password_hash,
         full_name=signup_data["admin_name"],
         role=UserRole.ORGANIZATION_ADMIN,
         organization_id=organization.id,
@@ -440,8 +452,20 @@ async def signup_organization(
     
     db.add(admin_user)
     
-    # Flush to get IDs before vendor linking
+    # Flush to get IDs before vendor linking and token creation
     db.flush()
+
+    # If using email flow: create one-time token and send set-password email (includes email verification OTP)
+    if use_password_email:
+        create_and_send_set_password_token(db, admin_user)
+    else:
+        otp_code = create_email_verification_otp(db, admin_user.id, ttl_minutes=15)
+        send_email_verification_otp(
+            admin_user.email,
+            otp_code,
+            admin_user.full_name,
+            context="organization signup",
+        )
     
     # Link to vendor if provided (vendor_id or vendor_code)
     vendor = None
@@ -504,18 +528,6 @@ async def signup_organization(
     db.refresh(admin_user)
     db.refresh(subscription)
     
-    # Generate access token
-    access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={
-            "sub": str(admin_user.id),
-            "email": admin_user.email,
-            "role": admin_user.role.value,
-            "organization_id": admin_user.organization_id
-        },
-        expires_delta=access_token_expires
-    )
-    
     response_data = {
         "message": "Organization registered successfully",
         "organization": {
@@ -535,9 +547,26 @@ async def signup_organization(
             "status": subscription.status,
             "end_date": subscription.end_date.isoformat()
         },
-        "access_token": access_token,
-        "token_type": "bearer"
     }
+
+    if use_password_email:
+        response_data["message"] = (
+            "Organization registered. Check your email for your verification code and link to set your password."
+        )
+        response_data["password_set_via_email"] = True
+    else:
+        access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={
+                "sub": str(admin_user.id),
+                "email": admin_user.email,
+                "role": admin_user.role.value,
+                "organization_id": admin_user.organization_id
+            },
+            expires_delta=access_token_expires
+        )
+        response_data["access_token"] = access_token
+        response_data["token_type"] = "bearer"
     
     # Add vendor info if linked
     if vendor_linked and vendor:
@@ -548,4 +577,116 @@ async def signup_organization(
         }
     
     return response_data
+
+
+@router.get("/organizations")
+async def list_organizations_for_signup(
+    db: Session = Depends(get_db)
+):
+    """
+    Public: list active organizations for customer signup dropdown.
+    Returns id and name only.
+    """
+    orgs = (
+        db.query(Organization)
+        .filter(Organization.is_active == True)
+        .order_by(Organization.name)
+        .all()
+    )
+    return [{"id": org.id, "name": org.name} for org in orgs]
+
+
+@router.post("/customer", status_code=status.HTTP_201_CREATED)
+async def signup_customer(
+    customer_data: dict = Body(...),
+    db: Session = Depends(get_db)
+):
+    """
+    Public: register a customer for an existing organization.
+    Body: organization_id, full_name, email, phone, password (optional).
+    If password is omitted, a set-password link is sent by email.
+    """
+    required = ["organization_id", "full_name", "email", "phone"]
+    for field in required:
+        if field not in customer_data or customer_data[field] is None or str(customer_data[field]).strip() == "":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Missing required field: {field}"
+            )
+    org_id = _int_or_none(customer_data.get("organization_id"))
+    if not org_id:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="organization_id must be a number")
+    org = db.query(Organization).filter(Organization.id == org_id, Organization.is_active == True).first()
+    if not org:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Organization not found or inactive")
+    email = str(customer_data["email"]).strip().lower()
+    phone = str(customer_data["phone"]).strip()
+    full_name = str(customer_data["full_name"]).strip()
+    if not full_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="full_name is required")
+    existing_email = db.query(User).filter(User.email == email).first()
+    if existing_email:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
+    existing_phone = db.query(User).filter(User.phone == phone).first()
+    if existing_phone:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Phone number already registered")
+    use_password_email = not customer_data.get("password") or not str(customer_data.get("password", "")).strip()
+    if use_password_email:
+        password_hash = get_pending_password_hash()
+    else:
+        password_hash = get_password_hash(customer_data["password"])
+    customer = User(
+        email=email,
+        phone=phone,
+        password_hash=password_hash,
+        full_name=full_name,
+        role=UserRole.CUSTOMER,
+        organization_id=org_id,
+        country_id=None,
+        state_id=None,
+        city_id=None,
+        is_active=True,
+        is_verified=False,
+    )
+    db.add(customer)
+    db.flush()
+    if use_password_email:
+        create_and_send_set_password_token(db, customer)
+    else:
+        otp_code = create_email_verification_otp(db, customer.id, ttl_minutes=15)
+        send_email_verification_otp(
+            customer.email,
+            otp_code,
+            customer.full_name,
+            context="customer account",
+        )
+    db.commit()
+    db.refresh(customer)
+    out = {
+        "message": "Customer registered successfully",
+        "user": {
+            "id": customer.id,
+            "email": customer.email,
+            "full_name": customer.full_name,
+            "role": customer.role.value,
+            "organization_id": customer.organization_id,
+        },
+    }
+    if use_password_email:
+        out["message"] = "Check your email for your verification code and link to set your password."
+        out["password_set_via_email"] = True
+    else:
+        out["message"] = "Customer registered. Check your email for a verification code."
+        access_token_expires = timedelta(minutes=settings.ACCESS_TOKEN_EXPIRE_MINUTES)
+        out["access_token"] = create_access_token(
+            data={
+                "sub": str(customer.id),
+                "email": customer.email,
+                "role": customer.role.value,
+                "organization_id": customer.organization_id,
+            },
+            expires_delta=access_token_expires
+        )
+        out["token_type"] = "bearer"
+    return out
 

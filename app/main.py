@@ -15,9 +15,10 @@ from app.services.oem_sync_job import start_oem_sync_loop
 
 # Import all models to ensure they're registered
 from app.models import (
-    platform_settings, product, product_part, sla_policy, integration, 
-    escalation, notification
+    platform_settings, product, product_part, sla_policy, integration,
+    escalation, notification, reminder_log,
 )
+from app.models.email_verification_otp import EmailVerificationOTP
 
 app = FastAPI(
     title="eRepairing.com API",
@@ -43,6 +44,9 @@ async def startup_event():
             integration.Integration.__table__,
             escalation.Escalation.__table__,
             notification.Notification.__table__,
+            reminder_log.ReminderLog.__table__,
+            # Required for signup / set-password email flow if alembic not applied
+            EmailVerificationOTP.__table__,
         ]
         
         Base.metadata.create_all(bind=engine, tables=tables_to_create)

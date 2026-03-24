@@ -463,12 +463,14 @@ async def list_engineers_for_reallocation(
     """List engineers in the state for reallocation (current city, workload)"""
     if not current_user.state_id:
         raise HTTPException(status_code=400, detail="User must be assigned to a state")
-    engineers = db.query(User).filter(
+    query = db.query(User).filter(
         User.state_id == current_user.state_id,
         User.role == UserRole.SUPPORT_ENGINEER,
-        User.organization_id == current_user.organization_id,
-        User.is_active == True
-    ).all()
+        User.is_active == True,
+    )
+    if current_user.organization_id is not None:
+        query = query.filter(User.organization_id == current_user.organization_id)
+    engineers = query.all()
     result = []
     for e in engineers:
         city_name = None
@@ -620,11 +622,14 @@ async def get_city_engineers(
     if not city:
         raise HTTPException(status_code=404, detail="City not found")
 
-    engineers = db.query(User).filter(
+    query = db.query(User).filter(
         User.city_id == city_id,
         User.role == UserRole.SUPPORT_ENGINEER,
-        User.organization_id == current_user.organization_id
-    ).all()
+        User.is_active == True,
+    )
+    if current_user.organization_id is not None:
+        query = query.filter(User.organization_id == current_user.organization_id)
+    engineers = query.all()
 
     result = []
     for engineer in engineers:

@@ -1,27 +1,98 @@
 """
-Application configuration
+Application configuration.
+Production: set CORS_ORIGINS, ALLOWED_HOSTS, FRONTEND_URL (and DATABASE_URL, SECRET_KEY, SMTP_*) in .env.
 """
-from pydantic_settings import BaseSettings
-from typing import List, Optional
+import json
+import os
+from pathlib import Path
+
+from dotenv import dotenv_values
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
+from typing import List, Optional, Union
+
+_BACKEND_ENV = Path(__file__).resolve().parent.parent.parent / ".env"
+
+
+def _parse_list(value: Union[str, List[str]]) -> List[str]:
+    """Parse env list: comma-separated string or list. Used for CORS_ORIGINS and ALLOWED_HOSTS."""
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        return [x.strip() for x in value.split(",") if x.strip()]
+    return []
+
+
+def _apply_backend_dotenv() -> None:
+    """
+    Load backend/.env into os.environ so SMTP works regardless of process cwd.
+    CORS_ORIGINS / ALLOWED_HOSTS must be JSON arrays for pydantic List fields — we convert from comma-separated.
+    """
+    if not _BACKEND_ENV.is_file():
+        return
+    values = dotenv_values(_BACKEND_ENV, encoding="utf-8-sig")
+    for k, v in values.items():
+        if v is None:
+            continue
+        if k == "CORS_ORIGINS":
+            os.environ[k] = json.dumps(_parse_list(v))
+        elif k == "ALLOWED_HOSTS":
+            os.environ[k] = json.dumps(_parse_list(v))
+        else:
+            os.environ[k] = v
+
+
+_apply_backend_dotenv()
 
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        # os.environ is filled by load_dotenv(_BACKEND_ENV) above
+        env_file_encoding="utf-8",
+        case_sensitive=True,
+        extra="ignore",
+    )
+
     # App
     PROJECT_NAME: str = "eRepairing.com"
     VERSION: str = "1.0.0"
     API_V1_STR: str = "/api/v1"
     
-    # Security
+    # Security (change SECRET_KEY in production)
     SECRET_KEY: str = "your-secret-key-change-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24 * 7  # 7 days
     
-    # Database
+    # Database (set DATABASE_URL in production to your AWS RDS or MySQL URL)
     DATABASE_URL: str = "mysql+pymysql://root:Ak18070406%40@localhost:3306/erepairingnew?charset=utf8mb4"
     
-    # CORS
-    CORS_ORIGINS: List[str] = ["http://localhost:3000", "http://localhost:3001"]
-    ALLOWED_HOSTS: List[str] = ["localhost", "127.0.0.1", "*.erepairing.com"]
+    # CORS: production set comma-separated, e.g. CORS_ORIGINS=https://yourapp.com,https://www.yourapp.com
+    CORS_ORIGINS: List[str] = [
+        "http://localhost:3000", "http://localhost:3001", "http://localhost:3002",
+        "http://localhost:3003", "http://localhost:3004", "http://127.0.0.1:3000",
+        "http://127.0.0.1:3001", "http://127.0.0.1:3002", "http://127.0.0.1:3003", "http://127.0.0.1:3004"
+    ]
+    # ALLOWED_HOSTS: production set comma-separated, e.g. ALLOWED_HOSTS=yourapp.com,api.yourapp.com
+    ALLOWED_HOSTS: List[str] = ["localhost", "127.0.0.1", "*.erepairing.com", "testserver"]
+
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def cors_origins_list(cls, v):
+        if v is None:
+            return [
+                "http://localhost:3000", "http://localhost:3001", "http://localhost:3002",
+                "http://localhost:3003", "http://localhost:3004",
+                "http://127.0.0.1:3000", "http://127.0.0.1:3001", "http://127.0.0.1:3002",
+                "http://127.0.0.1:3003", "http://127.0.0.1:3004"
+            ]
+        return _parse_list(v)
+
+    @field_validator("ALLOWED_HOSTS", mode="before")
+    @classmethod
+    def allowed_hosts_list(cls, v):
+        if v is None:
+            return ["localhost", "127.0.0.1", "*.erepairing.com", "testserver"]
+        return _parse_list(v)
     
     # Redis
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -59,14 +130,22 @@ class Settings(BaseSettings):
     SMTP_USER: Optional[str] = None
     SMTP_PASSWORD: Optional[str] = None
     SMTP_FROM_EMAIL: str = "noreply@erepairing.com"
+    SMTP_FROM_NAME: str = "eRepairing"
+    SMTP_REPLY_TO: Optional[str] = None
+    # Port 465 (Hostinger): set SMTP_USE_SSL=true and SMTP_USE_TLS=false
+    SMTP_USE_SSL: bool = False
+    SMTP_USE_TLS: bool = True
+
+    # Set-password link: production set to your frontend URL (e.g. https://yourapp.com) so email links work
+    FRONTEND_URL: str = "http://localhost:3000"
+    SET_PASSWORD_TOKEN_EXPIRE_HOURS: int = 24
+
+    # Daily reminder job: POST /api/v1/jobs/reminders/run with header X-Reminder-Secret
+    REMINDER_JOB_SECRET: Optional[str] = None
     
-    # Environment
+    # Environment (set ENVIRONMENT=production and DEBUG=false in production)
     ENVIRONMENT: str = "development"
     DEBUG: bool = True
-    
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
 
 
 settings = Settings()

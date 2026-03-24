@@ -3,7 +3,7 @@ Main API router
 """
 from fastapi import APIRouter
 
-from app.api.v1.endpoints import auth, tickets, users, organizations, ai, inventory, warranty, platform_admin, vendor, locations, signup, state_admin, country_admin, org_admin, city_admin, reports, devices, notifications, routes
+from app.api.v1.endpoints import auth, tickets, users, organizations, ai, inventory, warranty, platform_admin, vendor, locations, signup, state_admin, country_admin, org_admin, city_admin, reports, devices, notifications, routes, jobs
 
 api_router = APIRouter()
 
@@ -26,4 +26,5 @@ api_router.include_router(city_admin.router, prefix="/city-admin", tags=["city-a
 api_router.include_router(reports.router, prefix="/reports", tags=["reports"])
 api_router.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
 api_router.include_router(routes.router, prefix="/routes", tags=["routes"])
+api_router.include_router(jobs.router, prefix="/jobs", tags=["jobs"])
 

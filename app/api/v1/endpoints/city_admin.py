@@ -11,6 +11,7 @@ from app.core.database import get_db
 from app.core.permissions import require_role
 from app.models.user import User, UserRole
 from app.models.ticket import Ticket, TicketStatus, TicketComment
+from app.models.ticket_start_approval import TicketStartApproval
 from app.models.inventory import Inventory, InventoryTransaction, Part, ReorderRequest
 from app.services.ai.insights import build_sla_risk_explanation, compute_sla_risk
 from app.models.device import Device
@@ -442,6 +443,39 @@ async def create_complaint_follow_up(
     db.commit()
 
     return {"message": "Follow-up action logged", "follow_up_ticket_id": follow_up_ticket_id}
+
+
+@router.get("/tickets/pending-start-approvals")
+async def get_pending_start_approvals(
+    current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
+    db: Session = Depends(get_db)
+):
+    """Get tickets in this city with pending start approval (engineer accepted, waiting for city admin to approve start)."""
+    if not current_user.city_id:
+        raise HTTPException(status_code=400, detail="User must be assigned to a city")
+    pending = (
+        db.query(TicketStartApproval)
+        .options(joinedload(TicketStartApproval.ticket), joinedload(TicketStartApproval.requested_by))
+        .join(Ticket, Ticket.id == TicketStartApproval.ticket_id)
+        .filter(
+            Ticket.city_id == current_user.city_id,
+            TicketStartApproval.status == "pending",
+        )
+        .order_by(TicketStartApproval.created_at.desc())
+        .all()
+    )
+    out = []
+    for appr in pending:
+        t = appr.ticket
+        out.append({
+            "approval_id": appr.id,
+            "ticket_id": t.id,
+            "ticket_number": t.ticket_number,
+            "requested_by_id": appr.requested_by_id,
+            "requested_at": appr.created_at.isoformat() if appr.created_at else None,
+            "engineer_name": appr.requested_by.full_name if appr.requested_by else None,
+        })
+    return out
 
 
 @router.get("/tickets/pending-parts-approval")
@@ -976,6 +1010,14 @@ async def record_inventory_return(
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid quantity")
 
+    # ticket_id is optional; treat empty string as None, validate if provided
+    ticket_id_int = None
+    if ticket_id not in ("", None):
+        try:
+            ticket_id_int = int(ticket_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="Invalid ticket_id")
+
     inventory = db.query(Inventory).filter(
         Inventory.id == inventory_id,
         Inventory.city_id == current_user.city_id,
@@ -991,7 +1033,7 @@ async def record_inventory_return(
     transaction = InventoryTransaction(
         part_id=inventory.part_id,
         inventory_id=inventory.id,
-        ticket_id=ticket_id,
+        ticket_id=ticket_id_int,
         transaction_type="return",
         quantity=quantity,
         previous_stock=previous_stock,

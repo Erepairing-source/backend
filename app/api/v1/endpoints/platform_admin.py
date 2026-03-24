@@ -411,21 +411,22 @@ async def create_vendor(
     current_user: User = Depends(require_role([UserRole.PLATFORM_ADMIN])),
     db: Session = Depends(get_db)
 ):
-    """Create a new vendor"""
-    from app.core.security import get_password_hash
-    
-    # Validate required fields - vendor and user use same email/phone
+    """Create a new vendor. If user_password is omitted, set-password link is sent by email."""
+    from app.core.security import get_password_hash, get_pending_password_hash
+    from app.core.password_set_email import create_and_send_set_password_token
+
+    # Validate required fields - vendor and user use same email/phone. user_password is optional.
     required_fields = [
         "vendor_name", "user_email", "user_phone",
-        "user_full_name", "user_password"
+        "user_full_name"
     ]
-    
     for field in required_fields:
         if field not in vendor_data or not vendor_data[field]:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Missing required field: {field}"
             )
+    use_password_email = not vendor_data.get("user_password") or not str(vendor_data.get("user_password", "")).strip()
     
     # Use same email and phone for both vendor and user
     vendor_email = vendor_data["user_email"]
@@ -472,11 +473,12 @@ async def create_vendor(
         next_num += 1
         vendor_code = f"VENDOR-{next_num:03d}"
     
-    # Create user first
+    # Create user first (password optional: if omitted, set-password email is sent)
+    password_hash = get_pending_password_hash() if use_password_email else get_password_hash(vendor_data["user_password"])
     user = User(
         email=vendor_email,
         phone=vendor_phone,
-        password_hash=get_password_hash(vendor_data["user_password"]),
+        password_hash=password_hash,
         full_name=vendor_data["user_full_name"],
         role=UserRole.VENDOR,
         country_id=vendor_data.get("country_id"),
@@ -488,6 +490,8 @@ async def create_vendor(
     
     db.add(user)
     db.flush()
+    if use_password_email:
+        create_and_send_set_password_token(db, user)
     
     # Create vendor with same email and phone as user
     vendor = Vendor(
@@ -508,7 +512,7 @@ async def create_vendor(
     db.refresh(vendor)
     db.refresh(user)
     
-    return {
+    result = {
         "vendor": {
             "id": vendor.id,
             "name": vendor.name,
@@ -523,6 +527,10 @@ async def create_vendor(
             "role": user.role.value
         }
     }
+    if use_password_email:
+        result["password_set_via_email"] = True
+        result["message"] = "Vendor created. Set-password link has been sent to the user's email."
+    return result
 
 
 @router.get("/vendors")

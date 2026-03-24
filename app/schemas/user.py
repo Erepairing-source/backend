@@ -15,7 +15,7 @@ class UserBase(BaseModel):
 
 
 class UserCreate(UserBase):
-    password: str
+    password: Optional[str] = None  # If omitted, set-password link is sent by email (all roles)
     organization_id: Optional[int] = None
     country_id: Optional[int] = None
     state_id: Optional[int] = None

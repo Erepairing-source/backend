@@ -7,13 +7,18 @@ from app.core.database import Base, get_db
 from app.core.config import settings
 import os
 
-# Test database URL
-TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL", "mysql+pymysql://root:root@localhost:3306/erepairing_test")
+# Test database: use TEST_DATABASE_URL if set (e.g. MySQL); otherwise SQLite in-memory so tests run without MySQL
+TEST_DATABASE_URL = os.getenv(
+    "TEST_DATABASE_URL",
+    "sqlite:///:memory:"
+)
 
 @pytest.fixture(scope="session")
 def test_engine():
-    """Create test database engine"""
-    engine = create_engine(TEST_DATABASE_URL, echo=False)
+    """Create test database engine (SQLite in-memory by default, or MySQL via TEST_DATABASE_URL)."""
+    # SQLite needs check_same_thread=False for FastAPI TestClient
+    connect_args = {} if "sqlite" not in TEST_DATABASE_URL else {"check_same_thread": False}
+    engine = create_engine(TEST_DATABASE_URL, echo=False, connect_args=connect_args)
     Base.metadata.create_all(bind=engine)
     yield engine
     Base.metadata.drop_all(bind=engine)

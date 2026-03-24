@@ -54,11 +54,11 @@ ROLE_GUIDES: Dict[str, Dict[str, Any]] = {
     },
     UserRole.CITY_ADMIN.value: {
         "role_name": "City Admin",
-        "overview": "You manage city tickets, engineers, complaints, and inventory.",
+        "overview": "You manage city tickets, engineers, customer feedback, and inventory.",
         "access": [
             "City tickets list with SLA risk",
             "Bulk reassign and auto-redispatch",
-            "Complaints follow-up workflow",
+            "Feedback follow-up workflow",
             "Set HQ coordinates for ETA"
         ],
         "ai_features": [
@@ -68,7 +68,7 @@ ROLE_GUIDES: Dict[str, Dict[str, Any]] = {
         ],
         "sections": [
             {"title": "City Tickets", "path": "/city-admin/dashboard", "keywords": ["tickets", "sla", "risk"]},
-            {"title": "Complaints", "path": "/city-admin/dashboard", "keywords": ["complaint", "follow", "goodwill"]},
+            {"title": "Feedback", "path": "/city-admin/dashboard", "keywords": ["feedback", "complaint", "follow", "goodwill"]},
             {"title": "Engineers", "path": "/city-admin/dashboard", "keywords": ["engineer", "availability", "reassign"]},
             {"title": "HQ Settings", "path": "/city-admin/dashboard", "keywords": ["hq", "eta", "location"]}
         ]

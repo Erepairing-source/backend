@@ -19,6 +19,6 @@ def test_api_root(client):
 
 @pytest.mark.api
 def test_docs_available(client):
-    """Test that API docs are available"""
-    response = client.get("/docs")
+    """Test that API docs are available (main app mounts at /api/docs)"""
+    response = client.get("/api/docs")
     assert response.status_code == 200

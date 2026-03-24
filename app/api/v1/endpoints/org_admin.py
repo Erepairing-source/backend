@@ -102,10 +102,17 @@ async def get_org_admin_dashboard(
         
         subscription_data = None
         if subscription:
+            days_until_end = None
+            if subscription.end_date:
+                end = subscription.end_date
+                if end.tzinfo is None:
+                    end = end.replace(tzinfo=timezone.utc)
+                days_until_end = (end.date() - datetime.now(timezone.utc).date()).days
             subscription_data = {
                 "plan_name": subscription.plan.name if subscription.plan else None,
                 "status": str(subscription.status) if subscription.status else None,
-                "end_date": subscription.end_date.isoformat() if subscription.end_date else None
+                "end_date": subscription.end_date.isoformat() if subscription.end_date else None,
+                "days_until_end": days_until_end,
             }
         
         return {
