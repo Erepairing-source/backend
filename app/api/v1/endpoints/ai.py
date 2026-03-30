@@ -300,7 +300,8 @@ async def role_assistant(
 ):
     """Role-based dashboard assistant"""
     message = payload.get("message", "")
-    role = payload.get("role") or current_user.role.value
+    # Never trust role from client; always scope to authenticated user's role.
+    role = current_user.role.value
     page = payload.get("page")
     session_id = payload.get("session_id")
 

@@ -135,6 +135,9 @@ class Settings(BaseSettings):
     
     # OpenAI (for AI features)
     OPENAI_API_KEY: Optional[str] = None
+    # Free-tier LLM option (Groq). Used by role assistant when provided.
+    GROQ_API_KEY: Optional[str] = None
+    GROQ_MODEL: str = "llama-3.1-8b-instant"
     
     # AI Model Paths
     AI_MODELS_DIR: str = "./models"

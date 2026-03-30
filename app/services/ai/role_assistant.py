@@ -1,12 +1,21 @@
 """
-Role Assistant Service
-Provides role-specific guidance for dashboard navigation and access.
+Role Assistant Service.
+Provides role-specific guidance + role-scoped DB context and optional free LLM response.
 """
 from typing import Dict, List, Any, Optional
+from datetime import datetime, timezone
+import json
+from urllib import request as urlrequest
+from urllib.error import URLError, HTTPError
+from sqlalchemy import func
 
+from app.core.config import settings
 from app.services.ai.chat_memory import get_or_create_session, add_message, get_recent_messages
 
-from app.models.user import UserRole
+from app.models.user import UserRole, User
+from app.models.ticket import Ticket, TicketStatus
+from app.models.organization import Organization
+from app.models.subscription import Subscription, VendorOrganization, Vendor
 
 
 ROLE_GUIDES: Dict[str, Dict[str, Any]] = {
@@ -199,8 +208,11 @@ class RoleAssistantService:
             history_text = [m.message for m in get_recent_messages(db, session, limit=6) if m.sender == "user"]
             session_id = session.session_id
 
+        # Build role-scoped snapshot from DB (no cross-role leakage).
+        data_context = self._build_role_data_context(role=role, user_id=user_id, db=db)
+
         if not msg or msg in {"help", "hello", "hi", "start"}:
-            result = self._build_overview_reply(guide)
+            result = self._build_overview_reply(guide, data_context)
             result["session_id"] = session_id or ""
             if db and session:
                 add_message(db, session, "assistant", result["reply"])
@@ -264,20 +276,46 @@ class RoleAssistantService:
                     add_message(db, session, "assistant", result["reply"])
                 return result
 
-        result = self._build_overview_reply(guide)
+        # Try free LLM (Groq) with strict role + data context. Fallback if unavailable/fails.
+        llm_reply = self._try_llm_response(
+            role=role,
+            guide=guide,
+            message=message,
+            page=page,
+            data_context=data_context,
+            history_text=history_text,
+        )
+        if llm_reply:
+            result = {
+                "reply": llm_reply,
+                "actions": self._actions_from_sections(guide["sections"]),
+                "session_id": session_id or "",
+                "context": data_context,
+            }
+            if db and session:
+                add_message(db, session, "assistant", result["reply"])
+            return result
+
+        result = self._build_overview_reply(guide, data_context)
         result["session_id"] = session_id or ""
         if db and session:
             add_message(db, session, "assistant", result["reply"])
         return result
 
-    def _build_overview_reply(self, guide: Dict[str, Any]) -> Dict[str, Any]:
-        reply = (
-            f"{guide['overview']}\n\n"
-            + self._format_list("Top things you can do:", guide["access"])
-        )
+    def _build_overview_reply(self, guide: Dict[str, Any], data_context: Dict[str, Any]) -> Dict[str, Any]:
+        reply_parts = [
+            guide["overview"],
+            "",
+            self._format_list("Top things you can do:", guide["access"]),
+        ]
+        snapshot = self._format_snapshot(data_context)
+        if snapshot:
+            reply_parts += ["", snapshot]
+        reply = "\n".join(reply_parts)
         return {
             "reply": reply,
-            "actions": self._actions_from_sections(guide["sections"])
+            "actions": self._actions_from_sections(guide["sections"]),
+            "context": data_context,
         }
 
     def _format_list(self, title: str, items: List[str]) -> str:
@@ -286,3 +324,133 @@ class RoleAssistantService:
 
     def _actions_from_sections(self, sections: List[Dict[str, Any]]) -> List[Dict[str, str]]:
         return [{"title": s["title"], "url": s["path"]} for s in sections[:3]]
+
+    def _format_snapshot(self, data_context: Dict[str, Any]) -> str:
+        metrics = data_context.get("metrics") or {}
+        if not metrics:
+            return ""
+        lines = ["Live snapshot from your role scope:"]
+        for k, v in metrics.items():
+            label = k.replace("_", " ").title()
+            lines.append(f"- {label}: {v}")
+        return "\n".join(lines)
+
+    def _build_role_data_context(self, role: str, user_id: Optional[int], db) -> Dict[str, Any]:
+        if not db or not user_id:
+            return {"metrics": {}}
+
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            return {"metrics": {}}
+
+        metrics: Dict[str, Any] = {}
+        base_ticket_q = db.query(Ticket)
+
+        if role == UserRole.CUSTOMER.value:
+            q = base_ticket_q.filter(Ticket.customer_id == user.id)
+            metrics["my_total_tickets"] = q.count()
+            metrics["my_open_tickets"] = q.filter(Ticket.status.in_([TicketStatus.CREATED, TicketStatus.ASSIGNED, TicketStatus.IN_PROGRESS, TicketStatus.WAITING_PARTS])).count()
+            metrics["my_resolved_tickets"] = q.filter(Ticket.status.in_([TicketStatus.RESOLVED, TicketStatus.CLOSED])).count()
+
+        elif role == UserRole.SUPPORT_ENGINEER.value:
+            q = base_ticket_q.filter(Ticket.assigned_engineer_id == user.id)
+            metrics["assigned_tickets"] = q.count()
+            metrics["in_progress_tickets"] = q.filter(Ticket.status == TicketStatus.IN_PROGRESS).count()
+            metrics["waiting_parts_tickets"] = q.filter(Ticket.status == TicketStatus.WAITING_PARTS).count()
+
+        elif role in {UserRole.CITY_ADMIN.value, UserRole.STATE_ADMIN.value, UserRole.COUNTRY_ADMIN.value, UserRole.ORGANIZATION_ADMIN.value}:
+            q = base_ticket_q
+            if user.organization_id:
+                q = q.filter(Ticket.organization_id == user.organization_id)
+            if role == UserRole.CITY_ADMIN.value and user.city_id:
+                q = q.filter(Ticket.city_id == user.city_id)
+            elif role == UserRole.STATE_ADMIN.value and user.state_id:
+                q = q.filter(Ticket.state_id == user.state_id)
+            elif role == UserRole.COUNTRY_ADMIN.value and user.country_id:
+                q = q.filter(Ticket.country_id == user.country_id)
+            metrics["total_tickets"] = q.count()
+            metrics["open_tickets"] = q.filter(Ticket.status.in_([TicketStatus.CREATED, TicketStatus.ASSIGNED, TicketStatus.IN_PROGRESS, TicketStatus.WAITING_PARTS])).count()
+            metrics["resolved_tickets"] = q.filter(Ticket.status.in_([TicketStatus.RESOLVED, TicketStatus.CLOSED])).count()
+            if user.organization_id:
+                metrics["active_users_in_org"] = db.query(User).filter(User.organization_id == user.organization_id, User.is_active == True).count()
+
+        elif role == UserRole.PLATFORM_ADMIN.value:
+            metrics["total_organizations"] = db.query(Organization).count()
+            metrics["active_organizations"] = db.query(Organization).filter(Organization.is_active == True).count()
+            metrics["total_users"] = db.query(User).count()
+            metrics["total_tickets"] = db.query(Ticket).count()
+            metrics["active_subscriptions"] = db.query(Subscription).filter(Subscription.status == "active").count()
+
+        elif role == UserRole.VENDOR.value:
+            vendor = db.query(Vendor).filter(Vendor.user_id == user.id).first()
+            if not vendor:
+                return {"metrics": metrics, "generated_at": datetime.now(timezone.utc).isoformat()}
+            vendor_org_q = db.query(VendorOrganization).filter(VendorOrganization.vendor_id == vendor.id)
+            org_ids = [x.organization_id for x in vendor_org_q.all()]
+            metrics["linked_organizations"] = len(org_ids)
+            if org_ids:
+                t_q = base_ticket_q.filter(Ticket.organization_id.in_(org_ids))
+                metrics["tickets_in_linked_orgs"] = t_q.count()
+                metrics["open_tickets_in_linked_orgs"] = t_q.filter(Ticket.status.in_([TicketStatus.CREATED, TicketStatus.ASSIGNED, TicketStatus.IN_PROGRESS, TicketStatus.WAITING_PARTS])).count()
+
+        return {"metrics": metrics, "generated_at": datetime.now(timezone.utc).isoformat()}
+
+    def _try_llm_response(
+        self,
+        role: str,
+        guide: Dict[str, Any],
+        message: str,
+        page: Optional[str],
+        data_context: Dict[str, Any],
+        history_text: List[str],
+    ) -> Optional[str]:
+        api_key = settings.GROQ_API_KEY
+        if not api_key:
+            return None
+
+        system_prompt = (
+            "You are eRepairing role assistant. "
+            "Answer only within the user's role permissions and supplied data context. "
+            "Do not invent private data. If unknown, say so and suggest the right dashboard section."
+        )
+        user_prompt = (
+            f"Role: {role}\n"
+            f"Role overview: {guide.get('overview')}\n"
+            f"Allowed actions: {json.dumps(guide.get('access', []))}\n"
+            f"Sections: {json.dumps(guide.get('sections', []))}\n"
+            f"Current page: {page or 'unknown'}\n"
+            f"Data context: {json.dumps(data_context)}\n"
+            f"Recent user questions: {json.dumps(history_text[-5:])}\n"
+            f"User question: {message}\n\n"
+            "Respond in concise plain text with practical next steps."
+        )
+
+        try:
+            body = {
+                    "model": settings.GROQ_MODEL,
+                    "temperature": 0.2,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                }
+            req = urlrequest.Request(
+                "https://api.groq.com/openai/v1/chat/completions",
+                data=json.dumps(body).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urlrequest.urlopen(req, timeout=15) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            content = (
+                payload.get("choices", [{}])[0]
+                .get("message", {})
+                .get("content", "")
+                .strip()
+            )
+            return content or None
+        except (URLError, HTTPError, TimeoutError, ValueError, json.JSONDecodeError):
+            return None
