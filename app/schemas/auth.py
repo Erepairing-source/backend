@@ -16,6 +16,9 @@ class Token(BaseModel):
     user_id: int
     role: str
     organization_id: Optional[int] = None
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    is_verified: bool = False
 
 
 class TokenData(BaseModel):

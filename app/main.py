@@ -56,6 +56,13 @@ async def startup_event():
         print("You may need to run migrations or create tables manually.")
         print("Run: python -m backend.scripts.create_new_tables")
 
+    fu = (settings.FRONTEND_URL or "").lower()
+    if fu and "localhost" in fu and settings.ENVIRONMENT.lower() == "production":
+        print(
+            "[WARN] FRONTEND_URL points to localhost while ENVIRONMENT=production; "
+            "set FRONTEND_URL to your live site (e.g. https://www.erepairing.com) so email links work."
+        )
+
     if settings.OEM_WARRANTY_SYNC_ENABLED:
         run_main = os.environ.get("RUN_MAIN")
         if not settings.DEBUG or run_main == "true":

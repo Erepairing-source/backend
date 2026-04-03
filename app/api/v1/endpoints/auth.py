@@ -145,8 +145,11 @@ async def login(
             "access_token": access_token,
             "token_type": "bearer",
             "user_id": user.id,
+            "email": user.email,
+            "full_name": user.full_name,
             "role": user.role.value if user.role else None,
-            "organization_id": user.organization_id
+            "organization_id": user.organization_id,
+            "is_verified": bool(user.is_verified),
         }
         
     except HTTPException:
@@ -191,8 +194,11 @@ async def login_for_access_token(
         "access_token": access_token,
         "token_type": "bearer",
         "user_id": user.id,
+        "email": user.email,
+        "full_name": user.full_name,
         "role": user.role.value,
-        "organization_id": user.organization_id
+        "organization_id": user.organization_id,
+        "is_verified": bool(user.is_verified),
     }
 
 
@@ -213,7 +219,8 @@ async def get_current_user(
         "email": user.email,
         "full_name": user.full_name,
         "role": user.role.value,
-        "organization_id": user.organization_id
+        "organization_id": user.organization_id,
+        "is_verified": bool(user.is_verified),
     }
 
 
