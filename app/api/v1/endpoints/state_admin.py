@@ -31,7 +31,7 @@ def _india_cities_for_state(state_name: str) -> List[str]:
 from app.models.device import Device
 from app.models.inventory import Inventory, InventoryTransaction, Part
 from app.models.notification import Notification, NotificationType, NotificationChannel, NotificationStatus
-from app.models.sla_policy import SLAPolicy, ServicePolicy, SLAType
+from app.models.sla_policy import SLAPolicy, ServicePolicy, SLAType, coerce_sla_type, sla_type_to_api
 from app.services.ai.demand_forecasting import DemandForecastingService
 
 router = APIRouter()
@@ -1222,7 +1222,7 @@ async def list_state_sla_policies(
     return [
         {
             "id": p.id,
-            "sla_type": p.sla_type.value,
+            "sla_type": sla_type_to_api(p.sla_type),
             "target_hours": p.target_hours,
             "product_category": p.product_category,
             "product_id": p.product_id,
@@ -1292,7 +1292,10 @@ async def update_state_sla_policy(
         raise HTTPException(status_code=404, detail="SLA policy not found")
 
     if "sla_type" in policy_data:
-        policy.sla_type = SLAType(policy_data["sla_type"])
+        try:
+            policy.sla_type = coerce_sla_type(policy_data["sla_type"])
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     if "target_hours" in policy_data:
         policy.target_hours = policy_data["target_hours"]
     if "product_category" in policy_data:

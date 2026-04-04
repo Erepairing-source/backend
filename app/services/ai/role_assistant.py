@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import json
 from urllib import request as urlrequest
 from urllib.error import URLError, HTTPError
+from urllib.parse import quote
 from sqlalchemy import func
 
 from app.core.config import settings
@@ -276,7 +277,7 @@ class RoleAssistantService:
                     add_message(db, session, "assistant", result["reply"])
                 return result
 
-        # Try free LLM (Groq) with strict role + data context. Fallback if unavailable/fails.
+        # Try Gemini (preferred), then Groq, with strict role + data context.
         llm_reply = self._try_llm_response(
             role=role,
             guide=guide,
@@ -395,45 +396,61 @@ class RoleAssistantService:
 
         return {"metrics": metrics, "generated_at": datetime.now(timezone.utc).isoformat()}
 
-    def _try_llm_response(
-        self,
-        role: str,
-        guide: Dict[str, Any],
-        message: str,
-        page: Optional[str],
-        data_context: Dict[str, Any],
-        history_text: List[str],
-    ) -> Optional[str]:
+    def _try_gemini(self, system_prompt: str, user_prompt: str) -> Optional[str]:
+        api_key = (settings.GEMINI_API_KEY or "").strip()
+        if not api_key:
+            return None
+        model = (settings.GEMINI_MODEL or "gemini-2.0-flash").strip()
+        # Single user turn with explicit system block (works across Gemini 1.5/2.x REST)
+        combined = (
+            f"{system_prompt}\n\n---\n\n{user_prompt}\n\n"
+            "Reply now in plain text only. No markdown headings unless necessary."
+        )
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{quote(model, safe='')}:{quote('generateContent', safe='')}"
+            f"?key={quote(api_key, safe='')}"
+        )
+        body = {
+            "contents": [{"role": "user", "parts": [{"text": combined}]}],
+            "generationConfig": {
+                "temperature": 0.2,
+                "maxOutputTokens": 512,
+                "topP": 0.95,
+            },
+        }
+        try:
+            req = urlrequest.Request(
+                url,
+                data=json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlrequest.urlopen(req, timeout=20) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            candidates = payload.get("candidates") or []
+            if not candidates:
+                return None
+            parts = (candidates[0].get("content") or {}).get("parts") or []
+            texts = [p.get("text", "") for p in parts if isinstance(p, dict)]
+            content = "".join(texts).strip()
+            return content or None
+        except (URLError, HTTPError, TimeoutError, ValueError, json.JSONDecodeError, IndexError, KeyError):
+            return None
+
+    def _try_groq(self, system_prompt: str, user_prompt: str) -> Optional[str]:
         api_key = settings.GROQ_API_KEY
         if not api_key:
             return None
-
-        system_prompt = (
-            "You are eRepairing role assistant. "
-            "Answer only within the user's role permissions and supplied data context. "
-            "Do not invent private data. If unknown, say so and suggest the right dashboard section."
-        )
-        user_prompt = (
-            f"Role: {role}\n"
-            f"Role overview: {guide.get('overview')}\n"
-            f"Allowed actions: {json.dumps(guide.get('access', []))}\n"
-            f"Sections: {json.dumps(guide.get('sections', []))}\n"
-            f"Current page: {page or 'unknown'}\n"
-            f"Data context: {json.dumps(data_context)}\n"
-            f"Recent user questions: {json.dumps(history_text[-5:])}\n"
-            f"User question: {message}\n\n"
-            "Respond in concise plain text with practical next steps."
-        )
-
         try:
             body = {
-                    "model": settings.GROQ_MODEL,
-                    "temperature": 0.2,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                }
+                "model": settings.GROQ_MODEL,
+                "temperature": 0.2,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+            }
             req = urlrequest.Request(
                 "https://api.groq.com/openai/v1/chat/completions",
                 data=json.dumps(body).encode("utf-8"),
@@ -454,3 +471,37 @@ class RoleAssistantService:
             return content or None
         except (URLError, HTTPError, TimeoutError, ValueError, json.JSONDecodeError):
             return None
+
+    def _try_llm_response(
+        self,
+        role: str,
+        guide: Dict[str, Any],
+        message: str,
+        page: Optional[str],
+        data_context: Dict[str, Any],
+        history_text: List[str],
+    ) -> Optional[str]:
+        system_prompt = (
+            "You are the eRepairing in-app assistant. "
+            "Answer ONLY using the user's role, allowed actions, dashboard sections, and the numeric data context provided. "
+            "Do not invent tickets, users, or policies. If something is not in the context, say you do not have that data and point to the best matching section path. "
+            "Stay relevant to the user's question. "
+            "Be brief: at most ~120 words unless the user clearly asks for a long explanation. "
+            "Use short paragraphs or bullet steps when helpful."
+        )
+        user_prompt = (
+            f"Role: {role}\n"
+            f"Role overview: {guide.get('overview')}\n"
+            f"Allowed actions: {json.dumps(guide.get('access', []))}\n"
+            f"Sections: {json.dumps(guide.get('sections', []))}\n"
+            f"Current page: {page or 'unknown'}\n"
+            f"Data context: {json.dumps(data_context)}\n"
+            f"Recent user questions: {json.dumps(history_text[-5:])}\n"
+            f"User question: {message}\n\n"
+            "Give concise plain text with practical next steps (where to click / what to do next)."
+        )
+
+        text = self._try_gemini(system_prompt, user_prompt)
+        if text:
+            return text
+        return self._try_groq(system_prompt, user_prompt)

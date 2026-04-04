@@ -100,7 +100,11 @@ def upgrade() -> None:
         sa.Column('country_id', sa.Integer(), nullable=True),
         sa.Column('state_id', sa.Integer(), nullable=True),
         sa.Column('city_id', sa.Integer(), nullable=True),
-        sa.Column('sla_type', sa.Enum('first_response', 'assignment', 'resolution', 'on_site', name='slatype'), nullable=False),
+        sa.Column(
+            'sla_type',
+            sa.Enum('FIRST_RESPONSE', 'ASSIGNMENT', 'RESOLUTION', 'ON_SITE', name='slatype'),
+            nullable=False,
+        ),
         sa.Column('target_hours', sa.Integer(), nullable=False),
         sa.Column('priority_overrides', sa.JSON(), nullable=True),
         sa.Column('business_hours_only', sa.Boolean(), nullable=True),

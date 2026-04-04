@@ -1,6 +1,7 @@
 """
 Organization Admin endpoints - Comprehensive management
 """
+import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Body, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -10,6 +11,8 @@ from datetime import datetime, timedelta, timezone
 import json
 import io
 import traceback
+
+logger = logging.getLogger(__name__)
 
 try:
     import openpyxl
@@ -23,8 +26,9 @@ from app.core.data_isolation import check_organization_access, enforce_organizat
 from app.core.location_resolution import resolve_location_ids, int_or_none
 from app.models.user import User, UserRole
 from app.models.organization import Organization, OrganizationHierarchy
-from app.models.product import Product, ProductModel, ProductCategory
-from app.models.sla_policy import SLAPolicy, ServicePolicy, SLAType
+from app.models.product import Product, ProductModel, ProductCategory, parse_product_category
+from app.schemas.product import ProductCreate, ProductUpdate
+from app.models.sla_policy import SLAPolicy, ServicePolicy, SLAType, coerce_sla_type, sla_type_to_api
 from app.models.integration import Integration, IntegrationType, IntegrationStatus
 from app.models.ticket import Ticket, TicketStatus
 from app.models.device import Device
@@ -143,10 +147,10 @@ async def get_org_admin_dashboard(
             "subscription": subscription_data
         }
     except Exception as e:
-        import traceback
+        logger.exception("org-admin dashboard failed: %s", e)
         raise HTTPException(
             status_code=500,
-            detail=f"Error loading dashboard: {str(e)}\n{traceback.format_exc()}"
+            detail="Error loading dashboard. Please try again or contact support.",
         )
 
 
@@ -165,7 +169,10 @@ async def list_products(
         query = db.query(Product).filter(Product.organization_id == current_user.organization_id)
         
         if category:
-            query = query.filter(Product.category == category)
+            try:
+                query = query.filter(Product.category == parse_product_category(category))
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
         
         products = query.all()
         
@@ -193,81 +200,60 @@ async def list_products(
 
 @router.post("/products")
 async def create_product(
-    product_data: dict = Body(...),
+    product_data: ProductCreate,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
 ):
-    """Create a new product"""
+    """Create a new product (typed body; category accepts slugs like other, washing_machine, or OTHER)."""
     if not current_user.organization_id:
         raise HTTPException(status_code=400, detail="User must be associated with an organization")
-    
+
     try:
-        # Handle specifications if it's a string (from JSON textarea)
-        specs = product_data.get("specifications", {})
-        if isinstance(specs, str):
-            try:
-                specs = json.loads(specs) if specs else {}
-            except:
-                specs = {}
-        
-        # Handle common_failures - ensure it's a list
-        failures = product_data.get("common_failures", [])
-        if isinstance(failures, str):
-            failures = [f.strip() for f in failures.split('\n') if f.strip()]
-        elif not isinstance(failures, list):
-            failures = []
-        
-        # Handle recommended_parts - ensure it's a list
-        parts = product_data.get("recommended_parts", [])
-        if isinstance(parts, str):
-            # If comma-separated string, split it
-            parts = [p.strip() for p in parts.split(',') if p.strip()]
-        elif not isinstance(parts, list):
-            parts = []
-        
-        # Create the product
+        specs = dict(product_data.specifications)
+        if product_data.additional_notes is not None and str(product_data.additional_notes).strip():
+            specs["additional_notes"] = str(product_data.additional_notes).strip()
+
         product = Product(
             organization_id=current_user.organization_id,
-            name=product_data.get("name"),
-            category=product_data.get("category"),
-            brand=product_data.get("brand"),
-            description=product_data.get("description"),
-            default_warranty_months=product_data.get("default_warranty_months", 12),
-            extended_warranty_available=product_data.get("extended_warranty_available", False),
+            name=product_data.name,
+            category=product_data.category,
+            brand=product_data.brand,
+            description=product_data.description,
+            default_warranty_months=product_data.default_warranty_months,
+            extended_warranty_available=product_data.extended_warranty_available,
             specifications=specs,
-            common_failures=failures,
-            recommended_parts=parts,
-            is_active=product_data.get("is_active", True)
+            common_failures=product_data.common_failures,
+            recommended_parts=product_data.recommended_parts,
+            is_active=product_data.is_active,
         )
-        
+
         db.add(product)
-        db.flush()  # Flush to get the product ID
-        
-        # Create ProductModel if model_number is provided
-        model_number = product_data.get("model_number")
-        if model_number:
-            from app.models.product import ProductModel
+        db.flush()
+
+        if product_data.model_number:
             product_model = ProductModel(
                 product_id=product.id,
                 organization_id=current_user.organization_id,
-                model_number=model_number,
-                model_name=product_data.get("name", ""),
-                is_active=True
+                model_number=product_data.model_number,
+                model_name=product_data.name,
+                is_active=True,
             )
             db.add(product_model)
-        
+
         db.commit()
         db.refresh(product)
-        
+
         return {
             "id": product.id,
             "name": product.name,
-            "message": "Product created successfully"
+            "message": "Product created successfully",
         }
+    except HTTPException:
+        db.rollback()
+        raise
     except Exception as e:
         db.rollback()
-        import traceback
-        raise HTTPException(status_code=500, detail=f"Error creating product: {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Error creating product: {str(e)}")
 
 
 @router.post("/products/bulk-upload", status_code=status.HTTP_200_OK)
@@ -384,25 +370,10 @@ async def bulk_upload_products(
                     failed += 1
                     continue
                 
-                # Validate and convert category
-                category_map = {
-                    'ac': ProductCategory.AC,
-                    'refrigerator': ProductCategory.REFRIGERATOR,
-                    'washing_machine': ProductCategory.WASHING_MACHINE,
-                    'washingmachine': ProductCategory.WASHING_MACHINE,
-                    'tv': ProductCategory.TV,
-                    'television': ProductCategory.TV,
-                    'microwave': ProductCategory.MICROWAVE,
-                    'air_purifier': ProductCategory.AIR_PURIFIER,
-                    'airpurifier': ProductCategory.AIR_PURIFIER,
-                    'water_purifier': ProductCategory.WATER_PURIFIER,
-                    'waterpurifier': ProductCategory.WATER_PURIFIER,
-                    'other': ProductCategory.OTHER
-                }
-                
-                category = category_map.get(category_str)
-                if not category:
-                    errors.append(f"Row {row_idx}: Invalid category '{category_str}'. Valid categories: {', '.join(category_map.keys())}")
+                try:
+                    category = parse_product_category(category_str)
+                except ValueError as err:
+                    errors.append(f"Row {row_idx}: {err}")
                     failed += 1
                     continue
                 
@@ -691,63 +662,53 @@ async def get_product(
 @router.put("/products/{product_id}")
 async def update_product(
     product_id: int,
-    product_data: dict = Body(...),
+    product_data: ProductUpdate,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
 ):
-    """Update a product"""
+    """Update a product (partial update; same category rules as create)."""
     if not current_user.organization_id:
         raise HTTPException(status_code=400, detail="User must be associated with an organization")
-    
+
     try:
         product = db.query(Product).filter(
             Product.id == product_id,
             Product.organization_id == current_user.organization_id
         ).first()
-        
+
         if not product:
             raise HTTPException(status_code=404, detail="Product not found")
-        
-        # Update fields
-        if "name" in product_data:
-            product.name = product_data["name"]
-        if "category" in product_data:
-            product.category = product_data["category"]
-        if "brand" in product_data:
-            product.brand = product_data["brand"]
-        if "description" in product_data:
-            product.description = product_data["description"]
-        if "default_warranty_months" in product_data:
-            product.default_warranty_months = product_data["default_warranty_months"]
-        if "extended_warranty_available" in product_data:
-            product.extended_warranty_available = product_data["extended_warranty_available"]
-        
-        # Handle specifications
-        if "specifications" in product_data:
-            specs = product_data["specifications"]
-            if isinstance(specs, str):
-                try:
-                    specs = json.loads(specs) if specs.strip() else {}
-                except:
-                    specs = {}
+
+        payload = product_data.model_dump(exclude_unset=True)
+        if "name" in payload:
+            product.name = payload["name"]
+        if "category" in payload:
+            product.category = payload["category"]
+        if "brand" in payload:
+            product.brand = payload["brand"]
+        if "description" in payload:
+            product.description = payload["description"]
+        if "default_warranty_months" in payload:
+            product.default_warranty_months = payload["default_warranty_months"]
+        if "extended_warranty_available" in payload:
+            product.extended_warranty_available = payload["extended_warranty_available"]
+        if "specifications" in payload or "additional_notes" in payload:
+            specs = dict(product.specifications or {})
+            if "specifications" in payload:
+                specs.update(dict(payload["specifications"]))
+            if "additional_notes" in payload:
+                note = payload["additional_notes"]
+                if note is None or (isinstance(note, str) and not note.strip()):
+                    specs.pop("additional_notes", None)
+                else:
+                    specs["additional_notes"] = str(note).strip()
             product.specifications = specs
-        
-        # Handle common_failures
-        if "common_failures" in product_data:
-            failures = product_data["common_failures"]
-            if isinstance(failures, str):
-                failures = [f.strip() for f in failures.split('\n') if f.strip()]
-            product.common_failures = failures if isinstance(failures, list) else []
-        
-        # Handle recommended_parts
-        if "recommended_parts" in product_data:
-            parts = product_data["recommended_parts"]
-            if isinstance(parts, str):
-                parts = [p.strip() for p in parts.split(',') if p.strip()]
-            product.recommended_parts = parts if isinstance(parts, list) else []
-        
-        if "is_active" in product_data:
-            product.is_active = product_data["is_active"]
+        if "common_failures" in payload:
+            product.common_failures = payload["common_failures"]
+        if "recommended_parts" in payload:
+            product.recommended_parts = payload["recommended_parts"]
+        if "is_active" in payload:
+            product.is_active = payload["is_active"]
         
         db.commit()
         db.refresh(product)
@@ -840,10 +801,12 @@ async def list_sla_policies(
         return [
             {
                 "id": p.id,
-                "sla_type": p.sla_type.value if p.sla_type else None,
+                "sla_type": sla_type_to_api(p.sla_type) if p.sla_type else None,
                 "target_hours": p.target_hours,
                 "product_category": p.product_category,
-                "is_active": p.is_active
+                "priority_overrides": p.priority_overrides or {},
+                "business_hours_only": bool(p.business_hours_only),
+                "is_active": p.is_active,
             }
             for p in policies
         ]
@@ -863,9 +826,13 @@ async def create_sla_policy(
         raise HTTPException(status_code=400, detail="User must be associated with an organization")
     
     try:
+        try:
+            sla_type = coerce_sla_type(policy_data.get("sla_type"))
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         policy = SLAPolicy(
             organization_id=current_user.organization_id,
-            sla_type=policy_data.get("sla_type"),
+            sla_type=sla_type,
             target_hours=policy_data.get("target_hours"),
             product_category=policy_data.get("product_category"),
             product_id=policy_data.get("product_id"),
@@ -874,7 +841,8 @@ async def create_sla_policy(
             city_id=policy_data.get("city_id"),
             priority_overrides=policy_data.get("priority_overrides", {}),
             business_hours_only=policy_data.get("business_hours_only", False),
-            business_hours=policy_data.get("business_hours", {})
+            business_hours=policy_data.get("business_hours", {}),
+            is_active=policy_data.get("is_active", True),
         )
         
         db.add(policy)
@@ -912,7 +880,10 @@ async def update_sla_policy(
         
         # Update fields
         if "sla_type" in policy_data:
-            policy.sla_type = policy_data["sla_type"]
+            try:
+                policy.sla_type = coerce_sla_type(policy_data["sla_type"])
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
         if "target_hours" in policy_data:
             policy.target_hours = policy_data["target_hours"]
         if "product_category" in policy_data:
@@ -966,6 +937,20 @@ async def delete_sla_policy(
         raise HTTPException(status_code=500, detail=f"Error deleting SLA policy: {str(e)}")
 
 
+def _coerce_rules_dict(rules) -> dict:
+    if rules is None:
+        return {}
+    if isinstance(rules, dict):
+        return rules
+    if isinstance(rules, str):
+        try:
+            parsed = json.loads(rules)
+            return parsed if isinstance(parsed, dict) else {}
+        except (json.JSONDecodeError, TypeError):
+            return {}
+    return {}
+
+
 # Service Policy Management
 @router.get("/service-policies")
 async def list_service_policies(
@@ -985,7 +970,7 @@ async def list_service_policies(
             {
                 "id": p.id,
                 "policy_type": p.policy_type,
-                "rules": p.rules,
+                "rules": _coerce_rules_dict(p.rules),
                 "product_category": p.product_category,
                 "product_id": p.product_id,
                 "country_id": p.country_id,
@@ -1024,7 +1009,7 @@ async def get_service_policy(
         return {
             "id": policy.id,
             "policy_type": policy.policy_type,
-            "rules": policy.rules,
+            "rules": _coerce_rules_dict(policy.rules),
             "product_category": policy.product_category,
             "product_id": policy.product_id,
             "country_id": policy.country_id,
@@ -1054,7 +1039,7 @@ async def create_service_policy(
         policy = ServicePolicy(
             organization_id=current_user.organization_id,
             policy_type=policy_data.get("policy_type"),
-            rules=policy_data.get("rules", {}),
+            rules=_coerce_rules_dict(policy_data.get("rules", {})),
             product_category=policy_data.get("product_category"),
             product_id=policy_data.get("product_id"),
             country_id=policy_data.get("country_id"),
@@ -1108,7 +1093,7 @@ async def update_service_policy(
         if "policy_type" in policy_data:
             policy.policy_type = policy_data["policy_type"]
         if "rules" in policy_data:
-            policy.rules = policy_data["rules"]
+            policy.rules = _coerce_rules_dict(policy_data["rules"])
         if "product_category" in policy_data:
             policy.product_category = policy_data["product_category"]
         if "product_id" in policy_data:

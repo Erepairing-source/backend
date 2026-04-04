@@ -10,11 +10,50 @@ from app.core.database import Base
 
 
 class SLAType(str, enum.Enum):
-    """SLA type"""
-    FIRST_RESPONSE = "first_response"  # Time to first response
-    ASSIGNMENT = "assignment"  # Time to assign engineer
-    RESOLUTION = "resolution"  # Time to resolve
-    ON_SITE = "on_site"  # Time to reach customer location
+    """SLA type.
+
+    String values match MySQL native ENUM labels used in production (uppercase).
+    API and frontend use lowercase slugs via coerce_sla_type / sla_type_to_api.
+    """
+
+    FIRST_RESPONSE = "FIRST_RESPONSE"
+    ASSIGNMENT = "ASSIGNMENT"
+    RESOLUTION = "RESOLUTION"
+    ON_SITE = "ON_SITE"
+
+
+_SLA_SLUG_TO_ENUM = {
+    "first_response": SLAType.FIRST_RESPONSE,
+    "assignment": SLAType.ASSIGNMENT,
+    "resolution": SLAType.RESOLUTION,
+    "on_site": SLAType.ON_SITE,
+}
+
+
+def coerce_sla_type(raw):
+    """Parse API/body value into SLAType (accepts lowercase slugs or ENUM labels)."""
+    if raw is None:
+        raise ValueError("sla_type is required")
+    if isinstance(raw, SLAType):
+        return raw
+    s = str(raw).strip()
+    key = s.lower().replace("-", "_")
+    if key in _SLA_SLUG_TO_ENUM:
+        return _SLA_SLUG_TO_ENUM[key]
+    if s in SLAType.__members__:
+        return SLAType[s]
+    su = s.upper()
+    if su in SLAType.__members__:
+        return SLAType[su]
+    for member in SLAType:
+        if member.value == s:
+            return member
+    raise ValueError(f"Invalid sla_type: {raw!r}")
+
+
+def sla_type_to_api(member: SLAType) -> str:
+    """Stable lowercase slug for JSON (matches frontend Select values)."""
+    return member.name.lower()
 
 
 class SLAPolicy(Base):
