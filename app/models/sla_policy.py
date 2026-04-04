@@ -1,7 +1,7 @@
 """
 SLA and Service Policy models
 """
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Enum, Text, Integer as IntCol, JSON, TypeDecorator
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Integer as IntCol, JSON, TypeDecorator
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import enum
@@ -59,25 +59,22 @@ def sla_type_to_api(member: SLAType) -> str:
 class CoercedSLAType(TypeDecorator):
     """
     MySQL native ENUM `slatype` stores FIRST_RESPONSE, ASSIGNMENT, …
-    If a plain API slug string (e.g. first_response) is assigned, SQLAlchemy would
-    send it verbatim and MySQL rejects it — coerce on bind/load.
+
+    API sends lowercase slugs (resolution, first_response). SQLAlchemy's Enum
+    bind passes lowercase strings through unchanged, which MySQL rejects.
+    We always coerce and bind the canonical **string value** (e.g. RESOLUTION).
+
+    impl is String so we never double-process through Enum(); the DB column
+    stays MySQL ENUM from migrations — only the bound parameter must match.
     """
 
-    impl = Enum(
-        SLAType,
-        name="slatype",
-        native_enum=True,
-        create_constraint=False,
-        values_callable=lambda obj: [e.value for e in obj],
-    )
+    impl = String(32)
     cache_ok = True
 
     def process_bind_param(self, value, dialect):
         if value is None:
             return None
-        if isinstance(value, SLAType):
-            return value
-        return coerce_sla_type(value)
+        return coerce_sla_type(value).value
 
     def process_result_value(self, value, dialect):
         if value is None:
