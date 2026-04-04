@@ -693,9 +693,12 @@ async def update_product(
         if "extended_warranty_available" in payload:
             product.extended_warranty_available = payload["extended_warranty_available"]
         if "specifications" in payload or "additional_notes" in payload:
-            specs = dict(product.specifications or {})
+            # Full form saves send the whole specifications object — replace, do not merge,
+            # so removed key/value rows are actually removed.
             if "specifications" in payload:
-                specs.update(dict(payload["specifications"]))
+                specs = dict(payload["specifications"] or {})
+            else:
+                specs = dict(product.specifications or {})
             if "additional_notes" in payload:
                 note = payload["additional_notes"]
                 if note is None or (isinstance(note, str) and not note.strip()):

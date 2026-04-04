@@ -1,7 +1,7 @@
 """
 SLA and Service Policy models
 """
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Enum, Text, Integer as IntCol, JSON
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Enum, Text, Integer as IntCol, JSON, TypeDecorator
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import enum
@@ -56,6 +56,37 @@ def sla_type_to_api(member: SLAType) -> str:
     return member.name.lower()
 
 
+class CoercedSLAType(TypeDecorator):
+    """
+    MySQL native ENUM `slatype` stores FIRST_RESPONSE, ASSIGNMENT, …
+    If a plain API slug string (e.g. first_response) is assigned, SQLAlchemy would
+    send it verbatim and MySQL rejects it — coerce on bind/load.
+    """
+
+    impl = Enum(
+        SLAType,
+        name="slatype",
+        native_enum=True,
+        create_constraint=False,
+        values_callable=lambda obj: [e.value for e in obj],
+    )
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if isinstance(value, SLAType):
+            return value
+        return coerce_sla_type(value)
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if isinstance(value, SLAType):
+            return value
+        return coerce_sla_type(value)
+
+
 class SLAPolicy(Base):
     """SLA Policy per product/region"""
     __tablename__ = "sla_policies"
@@ -71,7 +102,7 @@ class SLAPolicy(Base):
     city_id = Column(Integer, ForeignKey("cities.id"), nullable=True)
     
     # SLA Rules
-    sla_type = Column(Enum(SLAType), nullable=False)
+    sla_type = Column(CoercedSLAType(), nullable=False)
     target_hours = Column(IntCol, nullable=False)  # Target time in hours
     
     # Priority-based overrides
