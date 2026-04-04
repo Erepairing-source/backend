@@ -135,7 +135,10 @@ class Settings(BaseSettings):
     
     # OpenAI (for AI features)
     OPENAI_API_KEY: Optional[str] = None
-    # Free-tier LLM option (Groq). Used by role assistant when provided.
+    # Google Gemini (role assistant + chatbot when set; preferred over Groq/OpenAI for those)
+    GEMINI_API_KEY: Optional[str] = None
+    GEMINI_MODEL: str = "gemini-2.0-flash"
+    # Free-tier LLM option (Groq). Used by role assistant when Gemini/OpenAI unavailable.
     GROQ_API_KEY: Optional[str] = None
     GROQ_MODEL: str = "llama-3.1-8b-instant"
     

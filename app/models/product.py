@@ -21,6 +21,48 @@ class ProductCategory(str, enum.Enum):
     OTHER = "other"
 
 
+def parse_product_category(raw) -> ProductCategory:
+    """
+    Accept enum member, API slug (e.g. other, washing_machine), or DB-style name (OTHER).
+    """
+    if isinstance(raw, ProductCategory):
+        return raw
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        raise ValueError("Product category is required")
+    s = str(raw).strip().lower().replace(" ", "_").replace("-", "_")
+    aliases = {
+        "ac": ProductCategory.AC,
+        "air_conditioner": ProductCategory.AC,
+        "refrigerator": ProductCategory.REFRIGERATOR,
+        "fridge": ProductCategory.REFRIGERATOR,
+        "washing_machine": ProductCategory.WASHING_MACHINE,
+        "washingmachine": ProductCategory.WASHING_MACHINE,
+        "tv": ProductCategory.TV,
+        "television": ProductCategory.TV,
+        "microwave": ProductCategory.MICROWAVE,
+        "air_purifier": ProductCategory.AIR_PURIFIER,
+        "airpurifier": ProductCategory.AIR_PURIFIER,
+        "water_purifier": ProductCategory.WATER_PURIFIER,
+        "waterpurifier": ProductCategory.WATER_PURIFIER,
+        "other": ProductCategory.OTHER,
+    }
+    if s in aliases:
+        return aliases[s]
+    upper = str(raw).strip().upper()
+    try:
+        return ProductCategory[upper]
+    except KeyError:
+        pass
+    for m in ProductCategory:
+        if m.value == s:
+            return m
+    raise ValueError(
+        f"Invalid product category {raw!r}. "
+        f"Use a slug such as: ac, refrigerator, washing_machine, tv, microwave, "
+        f"air_purifier, water_purifier, other (or enum name e.g. OTHER)."
+    )
+
+
 class Product(Base):
     """Product master - e.g., 'Split AC 1.5T'"""
     __tablename__ = "products"
@@ -30,7 +72,15 @@ class Product(Base):
     
     # Product details
     name = Column(String(255), nullable=False)  # e.g., "Split AC 1.5T"
-    category = Column(Enum(ProductCategory), nullable=False, index=True)
+    # Persist enum .value (e.g. "other") so API/JSON and ORM stay aligned across drivers.
+    category = Column(
+        Enum(
+            ProductCategory,
+            values_callable=lambda obj: [e.value for e in ProductCategory],
+        ),
+        nullable=False,
+        index=True,
+    )
     brand = Column(String(100), nullable=True)
     
     # Description
