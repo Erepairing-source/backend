@@ -1325,18 +1325,32 @@ async def list_partners(
     if not org or org.org_type.value != "oem":
         return []
     
-    # Get child organizations (service partners)
-    partners = db.query(Organization).filter(
-        Organization.parent_organization_id == org.id
-    ).all()
-    
+    # Get child organizations (service partners) with location labels for UI
+    partners = (
+        db.query(Organization)
+        .options(
+            joinedload(Organization.country),
+            joinedload(Organization.state),
+            joinedload(Organization.city),
+        )
+        .filter(Organization.parent_organization_id == org.id)
+        .all()
+    )
+
     return [
         {
             "id": p.id,
             "name": p.name,
             "email": p.email,
             "phone": p.phone,
-            "is_active": p.is_active
+            "address": p.address,
+            "is_active": p.is_active,
+            "country_id": p.country_id,
+            "state_id": p.state_id,
+            "city_id": p.city_id,
+            "country_name": p.country.name if p.country else None,
+            "state_name": p.state.name if p.state else None,
+            "city_name": p.city.name if p.city else None,
         }
         for p in partners
     ]
@@ -1356,6 +1370,29 @@ async def create_partner(
     if not org or org.org_type.value != "oem":
         raise HTTPException(status_code=400, detail="Only OEM organizations can create partners")
     
+    city_id = partner_data.get("city_id")
+    if city_id is not None:
+        try:
+            city_id = int(city_id)
+        except (TypeError, ValueError):
+            city_id = None
+    state_id = partner_data.get("state_id")
+    city_name = (partner_data.get("city_name") or "").strip() or None
+    state_id_int = None
+    if state_id is not None:
+        try:
+            state_id_int = int(state_id)
+        except (TypeError, ValueError):
+            state_id_int = None
+    if not city_id and city_name and state_id_int is not None:
+        row = (
+            db.query(City)
+            .filter(City.state_id == state_id_int, City.name == city_name)
+            .first()
+        )
+        if row:
+            city_id = row.id
+
     # Create service partner organization
     partner = Organization(
         name=partner_data.get("name"),
@@ -1365,8 +1402,8 @@ async def create_partner(
         address=partner_data.get("address"),
         parent_organization_id=org.id,
         country_id=partner_data.get("country_id"),
-        state_id=partner_data.get("state_id"),
-        city_id=partner_data.get("city_id")
+        state_id=state_id_int,
+        city_id=city_id,
     )
     
     db.add(partner)
