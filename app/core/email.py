@@ -2,6 +2,7 @@
 Email sending service (SMTP).
 All HTML bodies use the branded layout (see email_templates) aligned with the website UI.
 """
+import logging
 from urllib.parse import quote
 import smtplib
 from email.utils import formataddr, make_msgid, formatdate
@@ -10,6 +11,8 @@ from email.mime.multipart import MIMEMultipart
 from typing import Optional
 
 from app.core.config import settings
+logger = logging.getLogger(__name__)
+
 from app.core.email_templates import (
     block_callout,
     block_heading,
@@ -37,7 +40,10 @@ def send_email(
     Returns True on success, False if SMTP is not configured or send fails.
     """
     if not settings.SMTP_HOST or not settings.SMTP_USER or not settings.SMTP_PASSWORD:
-        print("[Email] SMTP not configured (SMTP_HOST/USER/PASSWORD). Skipping send.")
+        logger.warning(
+            "SMTP not configured (set SMTP_HOST, SMTP_USER, SMTP_PASSWORD). Email to %s not sent.",
+            to_email,
+        )
         return False
 
     msg = MIMEMultipart("alternative")
@@ -65,9 +71,10 @@ def send_email(
                     server.starttls()
                 server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
                 server.sendmail(settings.SMTP_FROM_EMAIL, [to_email], msg.as_string())
+        logger.info("SMTP sent ok subject=%r to=%s", subject, to_email)
         return True
     except Exception as e:
-        print(f"[Email] Send failed: {e}")
+        logger.exception("SMTP send failed to %s: %s", to_email, e)
         return False
 
 
