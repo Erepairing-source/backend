@@ -7,6 +7,7 @@ Password: optional. If omitted, a set-password link is sent by email (one-time, 
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status, Body
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -178,20 +179,23 @@ async def signup_organization(
     has_city = _int_or_none(signup_data.get("city_id")) is not None or (signup_data.get("city_name") or "").strip()
     if not has_city:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing location: provide city_id or city_name")
-    
-    # Check if organization email already exists
+
+    org_email = str(signup_data["org_email"]).strip().lower()
+    admin_email = str(signup_data["admin_email"]).strip().lower()
+
+    # Check if organization email already exists (case-insensitive)
     existing_org = db.query(Organization).filter(
-        Organization.email == signup_data["org_email"]
+        func.lower(Organization.email) == org_email
     ).first()
     if existing_org:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Organization with this email already exists"
         )
-    
-    # Check if admin email already exists
+
+    # Check if admin email already exists (case-insensitive)
     existing_user = db.query(User).filter(
-        User.email == signup_data["admin_email"]
+        func.lower(User.email) == admin_email
     ).first()
     if existing_user:
         raise HTTPException(
@@ -229,7 +233,7 @@ async def signup_organization(
     organization = Organization(
         name=signup_data["org_name"],
         org_type=OrganizationType(signup_data["org_type"]),
-        email=signup_data["org_email"],
+        email=org_email,
         phone=signup_data["org_phone"],
         address=signup_data.get("org_address", ""),
         country_id=country_id,
@@ -437,7 +441,7 @@ async def signup_organization(
 
     # Create admin user (use resolved location ids)
     admin_user = User(
-        email=signup_data["admin_email"],
+        email=admin_email,
         phone=signup_data["admin_phone"],
         password_hash=password_hash,
         full_name=signup_data["admin_name"],

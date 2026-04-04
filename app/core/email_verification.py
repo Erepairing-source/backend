@@ -4,14 +4,25 @@ Create and verify short-lived email OTPs for account / email verification.
 import random
 import string
 from datetime import datetime, timedelta, timezone
+from typing import Optional
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models.email_verification_otp import EmailVerificationOTP
+from app.models.user import User
 
 
 def _generate_code(length: int = 6) -> str:
     return "".join(random.choices(string.digits, k=length))
+
+
+def get_user_by_email_ci(db: Session, email: str) -> Optional[User]:
+    """Match user email case-insensitively (signup may store mixed case; clients often send lowercase)."""
+    n = str(email or "").strip().lower()
+    if not n:
+        return None
+    return db.query(User).filter(func.lower(User.email) == n).first()
 
 
 def create_email_verification_otp(db: Session, user_id: int, ttl_minutes: int = 15) -> str:
@@ -37,9 +48,7 @@ def verify_email_otp(db: Session, email: str, code: str, user_query) -> tuple[bo
     user_query: db.query(User) or pass User model class — we use email lookup from caller.
     Returns (success, message).
     """
-    from app.models.user import User
-
-    user = db.query(User).filter(User.email == email.strip().lower()).first()
+    user = get_user_by_email_ci(db, email)
     if not user:
         return False, "Invalid email or code"
     code = (code or "").strip()
@@ -74,8 +83,6 @@ def consume_verification_otp_for_user(
     Validate OTP for user_id, mark OTP consumed and user is_verified=True.
     Does not commit — caller commits with password / token updates in one transaction.
     """
-    from app.models.user import User
-
     code = (code or "").strip()
     if len(code) < 4:
         return False, "Invalid verification code"

@@ -1,6 +1,7 @@
 """
 Authentication endpoints
 """
+import logging
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, status, Body, Query
@@ -24,12 +25,14 @@ from app.core.email_verification import (
     create_email_verification_otp,
     verify_email_otp,
     consume_verification_otp_for_user,
+    get_user_by_email_ci,
 )
 from app.models.user import User
 from app.models.password_set_token import PasswordSetToken
 from app.schemas.auth import Token, LoginRequest
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class SetPasswordRequest(BaseModel):
@@ -59,8 +62,8 @@ async def login(
 ):
     """Login endpoint"""
     try:
-        # Find user
-        user = db.query(User).filter(User.email == login_data.email).first()
+        # Find user (case-insensitive email — same as verify / resend OTP)
+        user = get_user_by_email_ci(db, str(login_data.email))
         
         if not user:
             raise HTTPException(
@@ -353,8 +356,16 @@ async def resend_verification_otp(
     db: Session = Depends(get_db),
 ):
     """Resend email verification code (only if account exists and email is not yet verified)."""
-    user = db.query(User).filter(User.email == str(body.email).strip().lower()).first()
-    if not user or user.is_verified:
+    user = get_user_by_email_ci(db, str(body.email))
+    if not user:
+        logger.info(
+            "resend-verification-otp: no user for normalized email (same generic response as success)"
+        )
+        return {
+            "message": "If an account exists and needs verification, a new code has been sent to your email."
+        }
+    if user.is_verified:
+        logger.info("resend-verification-otp: user already verified id=%s", user.id)
         return {
             "message": "If an account exists and needs verification, a new code has been sent to your email."
         }
@@ -367,10 +378,15 @@ async def resend_verification_otp(
         context="account",
     )
     if not sent:
+        logger.error(
+            "resend-verification-otp: SMTP send failed for user id=%s (check SMTP_* env)",
+            user.id,
+        )
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Email could not be sent. Please try again later or contact support.",
         )
+    logger.info("resend-verification-otp: sent OK for user id=%s", user.id)
     return {
         "message": "If an account exists and needs verification, a new code has been sent to your email."
     }
