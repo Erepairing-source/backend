@@ -20,7 +20,7 @@ router = APIRouter()
 
 
 @router.get("/me/stats")
-async def get_organization_stats(
+def get_organization_stats(
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db),
 ):
@@ -91,7 +91,7 @@ async def get_organization_stats(
 
 
 @router.get("/me/sla-policies")
-async def list_customer_org_sla_policies(
+def list_customer_org_sla_policies(
     current_user: User = Depends(require_role([UserRole.CUSTOMER])),
     db: Session = Depends(get_db),
 ):
@@ -135,7 +135,7 @@ def _rules_as_dict(rules: Any) -> Dict[str, Any]:
 
 
 @router.get("/me/service-policies")
-async def list_customer_org_service_policies(
+def list_customer_org_service_policies(
     current_user: User = Depends(require_role([UserRole.CUSTOMER])),
     db: Session = Depends(get_db),
 ):
@@ -164,7 +164,7 @@ async def list_customer_org_service_policies(
 
 
 @router.get("/", response_model=List[dict])
-async def list_organizations(
+def list_organizations(
     current_user: User = Depends(require_role([UserRole.PLATFORM_ADMIN, UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -189,7 +189,7 @@ async def list_organizations(
 
 
 @router.get("/{organization_id}")
-async def get_organization(
+def get_organization(
     organization_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)

@@ -14,7 +14,7 @@ from app.models.organization import Organization
 
 def require_role(allowed_roles: List[UserRole]):
     """Dependency to require specific roles"""
-    async def role_checker(
+    def role_checker(
         token_data: dict = Depends(get_current_user_token),
         db: Session = Depends(get_db)
     ):
@@ -37,7 +37,7 @@ def require_role(allowed_roles: List[UserRole]):
 
 def require_organization_access(organization_id: int):
     """Check if user has access to organization"""
-    async def org_checker(
+    def org_checker(
         user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN, UserRole.PLATFORM_ADMIN])),
         db: Session = Depends(get_db)
     ):

@@ -142,7 +142,7 @@ def _resolve_city_id(db: Session, signup_data: dict, state_id: int) -> int:
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
-async def signup_organization(
+def signup_organization(
     signup_data: dict = Body(...),
     db: Session = Depends(get_db)
 ):
@@ -584,7 +584,7 @@ async def signup_organization(
 
 
 @router.get("/organizations")
-async def list_organizations_for_signup(
+def list_organizations_for_signup(
     db: Session = Depends(get_db)
 ):
     """
@@ -601,7 +601,7 @@ async def list_organizations_for_signup(
 
 
 @router.post("/customer", status_code=status.HTTP_201_CREATED)
-async def signup_customer(
+def signup_customer(
     customer_data: dict = Body(...),
     db: Session = Depends(get_db)
 ):

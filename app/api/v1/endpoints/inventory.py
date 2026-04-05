@@ -15,7 +15,7 @@ router = APIRouter()
 
 
 @router.get("/parts")
-async def list_parts(
+def list_parts(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -36,7 +36,7 @@ async def list_parts(
 
 
 @router.get("/stock")
-async def get_inventory(
+def get_inventory(
     city_id: Optional[int] = None,
     state_id: Optional[int] = None,
     part_id: Optional[int] = None,
@@ -106,7 +106,7 @@ async def get_inventory(
 
 
 @router.get("/reorder-requests")
-async def list_reorder_requests(
+def list_reorder_requests(
     status: Optional[str] = None,
     current_user: User = Depends(require_role([
         UserRole.CITY_ADMIN,
@@ -153,7 +153,7 @@ async def list_reorder_requests(
 
 
 @router.post("/reorder-requests/{request_id}/approve")
-async def approve_reorder(
+def approve_reorder(
     request_id: int,
     current_user: User = Depends(require_role([
         UserRole.STATE_ADMIN,

@@ -42,7 +42,7 @@ def _generate_password(length: int = 10) -> str:
 
 
 @router.get("/available-roles")
-async def get_available_roles(
+def get_available_roles(
     current_user: User = Depends(require_role([
         UserRole.ORGANIZATION_ADMIN,
         UserRole.PLATFORM_ADMIN
@@ -66,7 +66,7 @@ async def get_available_roles(
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
-async def create_user(
+def create_user(
     user_data: UserCreate,
     current_user: User = Depends(require_role([
         UserRole.ORGANIZATION_ADMIN,
@@ -236,7 +236,7 @@ async def create_user(
 
 
 @router.get("/me", response_model=UserResponse)
-async def get_my_profile(
+def get_my_profile(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -245,7 +245,7 @@ async def get_my_profile(
 
 
 @router.put("/me/location")
-async def update_my_location(
+def update_my_location(
     payload: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER])),
     db: Session = Depends(get_db)
@@ -260,7 +260,7 @@ async def update_my_location(
 
 
 @router.get("/", response_model=List[UserResponse])
-async def list_users(
+def list_users(
     role: UserRole = None,
     organization_id: int = None,
     current_user: User = Depends(require_role([
@@ -378,7 +378,7 @@ async def bulk_create_customers(
 
 
 @router.get("/bulk-customers-template")
-async def bulk_customers_template(
+def bulk_customers_template(
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
 ):
     """Download Excel template for bulk customer upload. Columns: full_name, email, phone."""
@@ -395,7 +395,7 @@ async def bulk_customers_template(
 
 
 @router.get("/{user_id}", response_model=UserResponse)
-async def get_user(
+def get_user(
     user_id: int,
     current_user: User = Depends(require_role([
         UserRole.ORGANIZATION_ADMIN,
@@ -421,7 +421,7 @@ async def get_user(
 
 
 @router.put("/{user_id}", response_model=UserResponse)
-async def update_user(
+def update_user(
     user_id: int,
     user_data: UserUpdate,
     current_user: User = Depends(require_role([
@@ -557,7 +557,7 @@ async def update_user(
 
 
 @router.get("/engineers", response_model=List[UserResponse])
-async def list_engineers(
+def list_engineers(
     city_id: int = None,
     is_available: bool = None,
     current_user: User = Depends(get_current_user),

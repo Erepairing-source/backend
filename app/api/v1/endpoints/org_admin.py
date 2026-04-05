@@ -44,7 +44,7 @@ route_optimizer = RouteOptimizationService()
 
 
 @router.get("/dashboard")
-async def get_org_admin_dashboard(
+def get_org_admin_dashboard(
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -156,7 +156,7 @@ async def get_org_admin_dashboard(
 
 
 @router.put("/organization")
-async def update_my_organization(
+def update_my_organization(
     payload: OrganizationAdminSelfUpdate,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db),
@@ -253,7 +253,7 @@ async def update_my_organization(
 
 # Product Catalog Management
 @router.get("/products")
-async def list_products(
+def list_products(
     category: Optional[str] = None,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -296,7 +296,7 @@ async def list_products(
 
 
 @router.post("/products")
-async def create_product(
+def create_product(
     product_data: ProductCreate,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -605,7 +605,7 @@ async def bulk_upload_products(
 
 
 @router.get("/products/bulk-upload-template")
-async def download_bulk_upload_template(
+def download_bulk_upload_template(
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -721,7 +721,7 @@ async def download_bulk_upload_template(
 
 
 @router.get("/products/{product_id}")
-async def get_product(
+def get_product(
     product_id: int,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -757,7 +757,7 @@ async def get_product(
 
 
 @router.put("/products/{product_id}")
-async def update_product(
+def update_product(
     product_id: int,
     product_data: ProductUpdate,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
@@ -824,7 +824,7 @@ async def update_product(
 
 
 @router.delete("/products/{product_id}")
-async def delete_product(
+def delete_product(
     product_id: int,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -852,7 +852,7 @@ async def delete_product(
 
 
 @router.get("/products/{product_id}/models")
-async def list_product_models(
+def list_product_models(
     product_id: int,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -885,7 +885,7 @@ async def list_product_models(
 
 # SLA Policy Management
 @router.get("/sla-policies")
-async def list_sla_policies(
+def list_sla_policies(
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -916,7 +916,7 @@ async def list_sla_policies(
 
 
 @router.post("/sla-policies")
-async def create_sla_policy(
+def create_sla_policy(
     policy_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -959,7 +959,7 @@ async def create_sla_policy(
 
 
 @router.put("/sla-policies/{policy_id}")
-async def update_sla_policy(
+def update_sla_policy(
     policy_id: int,
     policy_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
@@ -1010,7 +1010,7 @@ async def update_sla_policy(
 
 
 @router.delete("/sla-policies/{policy_id}")
-async def delete_sla_policy(
+def delete_sla_policy(
     policy_id: int,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -1053,7 +1053,7 @@ def _coerce_rules_dict(rules) -> dict:
 
 # Service Policy Management
 @router.get("/service-policies")
-async def list_service_policies(
+def list_service_policies(
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -1088,7 +1088,7 @@ async def list_service_policies(
 
 
 @router.get("/service-policies/{policy_id}")
-async def get_service_policy(
+def get_service_policy(
     policy_id: int,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -1126,7 +1126,7 @@ async def get_service_policy(
 
 
 @router.post("/service-policies")
-async def create_service_policy(
+def create_service_policy(
     policy_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -1170,7 +1170,7 @@ async def create_service_policy(
 
 
 @router.put("/service-policies/{policy_id}")
-async def update_service_policy(
+def update_service_policy(
     policy_id: int,
     policy_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
@@ -1230,7 +1230,7 @@ async def update_service_policy(
 
 
 @router.delete("/service-policies/{policy_id}")
-async def delete_service_policy(
+def delete_service_policy(
     policy_id: int,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -1261,7 +1261,7 @@ async def delete_service_policy(
 
 # Integration Management
 @router.get("/integrations")
-async def list_integrations(
+def list_integrations(
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -1293,7 +1293,7 @@ async def list_integrations(
 
 
 @router.post("/integrations")
-async def create_integration(
+def create_integration(
     integration_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -1329,7 +1329,7 @@ async def create_integration(
 
 
 @router.put("/integrations/{integration_id}")
-async def update_integration(
+def update_integration(
     integration_id: int,
     integration_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
@@ -1381,7 +1381,7 @@ async def update_integration(
 
 
 @router.delete("/integrations/{integration_id}")
-async def delete_integration(
+def delete_integration(
     integration_id: int,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -1410,7 +1410,7 @@ async def delete_integration(
 
 # Partner Management (for OEM)
 @router.get("/partners")
-async def list_partners(
+def list_partners(
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -1454,7 +1454,7 @@ async def list_partners(
 
 
 @router.post("/partners")
-async def create_partner(
+def create_partner(
     partner_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -1525,7 +1525,7 @@ async def create_partner(
 
 
 @router.get("/ai/cost-to-serve")
-async def get_cost_to_serve(
+def get_cost_to_serve(
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -1569,7 +1569,7 @@ async def get_cost_to_serve(
 
 
 @router.get("/ai/inventory-forecast")
-async def get_inventory_forecast(
+def get_inventory_forecast(
     days: int = 30,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -1651,7 +1651,7 @@ async def optimize_routes_for_engineer(
 
 
 @router.post("/subscription/upgrade")
-async def upgrade_subscription(
+def upgrade_subscription(
     upgrade_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -1746,7 +1746,7 @@ async def upgrade_subscription(
 
 # Analytics & KPIs
 @router.get("/analytics")
-async def get_org_analytics(
+def get_org_analytics(
     period: str = "30d",
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -1938,7 +1938,7 @@ async def get_org_analytics(
 
 # Inventory Management
 @router.get("/inventory/parts")
-async def list_parts(
+def list_parts(
     search: Optional[str] = None,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -2003,7 +2003,7 @@ async def list_parts(
 # IMPORTANT: These specific routes must come BEFORE the parameterized route /inventory/parts/{part_id}
 # to avoid FastAPI trying to match "bulk-upload-template" as an integer part_id
 @router.get("/inventory/parts/bulk-upload-template")
-async def download_parts_bulk_upload_template(
+def download_parts_bulk_upload_template(
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -2297,7 +2297,7 @@ async def bulk_upload_parts(
 
 
 @router.get("/inventory/parts/{part_id}")
-async def get_part(
+def get_part(
     part_id: int,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -2367,7 +2367,7 @@ async def get_part(
 
 
 @router.post("/inventory/parts")
-async def create_part(
+def create_part(
     part_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -2411,7 +2411,7 @@ async def create_part(
 
 
 @router.put("/inventory/parts/{part_id}")
-async def update_part(
+def update_part(
     part_id: int,
     part_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
@@ -2469,7 +2469,7 @@ async def update_part(
 
 
 @router.delete("/inventory/parts/{part_id}")
-async def delete_part(
+def delete_part(
     part_id: int,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -2508,7 +2508,7 @@ async def delete_part(
 
 
 @router.get("/inventory/stock")
-async def get_inventory(
+def get_inventory(
     city_id: Optional[int] = None,
     state_id: Optional[int] = None,
     part_id: Optional[int] = None,
@@ -2560,7 +2560,7 @@ async def get_inventory(
 
 
 @router.get("/inventory/stock/{inventory_id}")
-async def get_inventory_entry(
+def get_inventory_entry(
     inventory_id: int,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -2622,7 +2622,7 @@ async def get_inventory_entry(
 
 
 @router.post("/inventory/stock")
-async def create_inventory(
+def create_inventory(
     inventory_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -3008,7 +3008,7 @@ async def bulk_upload_inventory(
 
 
 @router.get("/inventory/stock/bulk-upload-template")
-async def download_inventory_bulk_upload_template(
+def download_inventory_bulk_upload_template(
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -3110,7 +3110,7 @@ async def download_inventory_bulk_upload_template(
 
 
 @router.put("/inventory/stock/{inventory_id}")
-async def update_inventory(
+def update_inventory(
     inventory_id: int,
     inventory_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
@@ -3183,7 +3183,7 @@ async def update_inventory(
 
 
 @router.delete("/inventory/stock/{inventory_id}")
-async def delete_inventory(
+def delete_inventory(
     inventory_id: int,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -3224,7 +3224,7 @@ async def delete_inventory(
 
 
 @router.post("/inventory/stock/{inventory_id}/adjust")
-async def adjust_stock(
+def adjust_stock(
     inventory_id: int,
     adjustment_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
@@ -3295,7 +3295,7 @@ async def adjust_stock(
 
 
 @router.get("/inventory/transactions")
-async def list_transactions(
+def list_transactions(
     part_id: Optional[int] = None,
     inventory_id: Optional[int] = None,
     transaction_type: Optional[str] = None,
@@ -3352,7 +3352,7 @@ async def list_transactions(
 
 
 @router.get("/inventory/transactions/{transaction_id}")
-async def get_transaction(
+def get_transaction(
     transaction_id: int,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -3401,7 +3401,7 @@ async def get_transaction(
 
 
 @router.get("/inventory/reorder-requests")
-async def list_reorder_requests(
+def list_reorder_requests(
     status: Optional[str] = None,
     part_id: Optional[int] = None,
     limit: int = 50,
@@ -3461,7 +3461,7 @@ async def list_reorder_requests(
 
 
 @router.get("/inventory/reorder-requests/{request_id}")
-async def get_reorder_request(
+def get_reorder_request(
     request_id: int,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -3516,7 +3516,7 @@ async def get_reorder_request(
 
 
 @router.post("/inventory/reorder-requests")
-async def create_reorder_request(
+def create_reorder_request(
     request_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -3600,7 +3600,7 @@ async def create_reorder_request(
 
 
 @router.post("/inventory/reorder-requests/{request_id}/approve")
-async def approve_reorder_request(
+def approve_reorder_request(
     request_id: int,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -3655,7 +3655,7 @@ async def approve_reorder_request(
 
 
 @router.post("/inventory/reorder-requests/{request_id}/reject")
-async def reject_reorder_request(
+def reject_reorder_request(
     request_id: int,
     rejection_reason: Optional[str] = Body(None, embed=True),
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
@@ -3699,7 +3699,7 @@ async def reject_reorder_request(
 
 
 @router.post("/inventory/reorder-requests/{request_id}/fulfill")
-async def fulfill_reorder_request(
+def fulfill_reorder_request(
     request_id: int,
     fulfillment_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
@@ -3762,7 +3762,7 @@ async def fulfill_reorder_request(
 
 # Product-Part Relationship Management
 @router.get("/products/{product_id}/parts")
-async def get_product_parts(
+def get_product_parts(
     product_id: int,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -3825,7 +3825,7 @@ async def get_product_parts(
 
 
 @router.post("/products/{product_id}/parts")
-async def add_product_part(
+def add_product_part(
     product_id: int,
     part_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
@@ -3886,7 +3886,7 @@ async def add_product_part(
 
 
 @router.delete("/products/{product_id}/parts/{part_id}")
-async def remove_product_part(
+def remove_product_part(
     product_id: int,
     part_id: int,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
@@ -3918,7 +3918,7 @@ async def remove_product_part(
 
 
 @router.get("/parts/{part_id}/products")
-async def get_part_products(
+def get_part_products(
     part_id: int,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)
@@ -3952,7 +3952,7 @@ async def get_part_products(
 
 
 @router.get("/inventory/stock-with-products")
-async def get_inventory_with_products(
+def get_inventory_with_products(
     low_stock_only: bool = False,
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
     db: Session = Depends(get_db)

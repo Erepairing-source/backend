@@ -19,7 +19,7 @@ router = APIRouter()
 
 
 @router.get("/dashboard")
-async def vendor_dashboard(
+def vendor_dashboard(
     current_user: User = Depends(require_role([UserRole.VENDOR])),
     db: Session = Depends(get_db)
 ):
@@ -176,7 +176,7 @@ async def vendor_dashboard(
 
 
 @router.get("/organizations")
-async def list_vendor_organizations(
+def list_vendor_organizations(
     current_user: User = Depends(require_role([UserRole.VENDOR])),
     db: Session = Depends(get_db)
 ):
@@ -233,7 +233,7 @@ async def list_vendor_organizations(
 
 
 @router.get("/organizations/{organization_id}")
-async def get_vendor_organization_details(
+def get_vendor_organization_details(
     organization_id: int,
     current_user: User = Depends(require_role([UserRole.VENDOR])),
     db: Session = Depends(get_db)
@@ -302,7 +302,7 @@ async def get_vendor_organization_details(
 
 
 @router.get("/commissions")
-async def get_vendor_commissions(
+def get_vendor_commissions(
     current_user: User = Depends(require_role([UserRole.VENDOR])),
     db: Session = Depends(get_db)
 ):
@@ -375,7 +375,7 @@ async def get_vendor_commissions(
 
 
 @router.get("/analytics")
-async def get_vendor_analytics(
+def get_vendor_analytics(
     current_user: User = Depends(require_role([UserRole.VENDOR])),
     db: Session = Depends(get_db)
 ):

@@ -15,7 +15,7 @@ router = APIRouter()
 
 
 @router.get("/")
-async def list_notifications(
+def list_notifications(
     unread_only: bool = False,
     limit: int = Query(50, ge=1, le=200),
     current_user: User = Depends(get_current_user),
@@ -46,7 +46,7 @@ async def list_notifications(
 
 
 @router.post("/{notification_id}/read")
-async def mark_notification_read(
+def mark_notification_read(
     notification_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -66,7 +66,7 @@ async def mark_notification_read(
 
 
 @router.post("/dispatch")
-async def dispatch_notifications(
+def dispatch_notifications(
     dispatch_data: dict = Body(default={}),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)

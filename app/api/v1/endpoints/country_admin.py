@@ -42,7 +42,7 @@ router = APIRouter()
 
 
 @router.get("/dashboard")
-async def get_country_dashboard(
+def get_country_dashboard(
     time_range: str = "30d",
     current_user: User = Depends(require_role([UserRole.COUNTRY_ADMIN])),
     db: Session = Depends(get_db)
@@ -172,7 +172,7 @@ def _state_metrics_row(state, city_ids, org_ids, db: Session):
 
 
 @router.get("/states")
-async def get_country_states(
+def get_country_states(
     current_user: User = Depends(require_role([UserRole.COUNTRY_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -225,7 +225,7 @@ async def get_country_states(
 
 
 @router.get("/warranty-abuse")
-async def get_warranty_abuse_signals(
+def get_warranty_abuse_signals(
     current_user: User = Depends(require_role([UserRole.COUNTRY_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -257,7 +257,7 @@ async def get_warranty_abuse_signals(
 
 
 @router.get("/warranty-abuse/products")
-async def get_warranty_abuse_by_product(
+def get_warranty_abuse_by_product(
     current_user: User = Depends(require_role([UserRole.COUNTRY_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -297,7 +297,7 @@ async def get_warranty_abuse_by_product(
 
 
 @router.get("/oem-defects")
-async def get_oem_defect_trends(
+def get_oem_defect_trends(
     current_user: User = Depends(require_role([UserRole.COUNTRY_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -350,7 +350,7 @@ async def get_oem_defect_trends(
 
 
 @router.get("/partner-score")
-async def get_partner_score_predictions(
+def get_partner_score_predictions(
     current_user: User = Depends(require_role([UserRole.COUNTRY_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -384,7 +384,7 @@ async def get_partner_score_predictions(
 
 
 @router.get("/partners")
-async def get_partner_performance(
+def get_partner_performance(
     current_user: User = Depends(require_role([UserRole.COUNTRY_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -456,7 +456,7 @@ async def get_partner_performance(
 
 
 @router.get("/oem-defect-trends")
-async def get_oem_defect_trends(
+def get_oem_defect_trends(
     current_user: User = Depends(require_role([UserRole.COUNTRY_ADMIN])),
     db: Session = Depends(get_db)
 ):

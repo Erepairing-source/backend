@@ -14,14 +14,178 @@ from app.core.database import get_db
 from app.core.permissions import require_role, get_current_user
 from app.models.user import User, UserRole
 from app.models.ticket import Ticket, TicketStatus, TicketComment
-from app.models.inventory import InventoryTransaction
+from app.models.inventory import Inventory, InventoryTransaction
 from app.models.device import Device
 
 router = APIRouter()
 
 
+def _build_audit_logs_payload(
+    db: Session,
+    current_user: User,
+    entity_type: Optional[str],
+    entity_id: Optional[int],
+    user_id: Optional[int],
+    start_date: Optional[str],
+    end_date: Optional[str],
+    limit: int,
+) -> dict:
+    """Shared sync logic for audit log list and export (runs in thread pool via def routes)."""
+    logs = []
+
+    ticket_comments_query = db.query(TicketComment)
+
+    if entity_type == "ticket" and entity_id:
+        ticket_comments_query = ticket_comments_query.filter(TicketComment.ticket_id == entity_id)
+    if user_id:
+        ticket_comments_query = ticket_comments_query.filter(TicketComment.user_id == user_id)
+
+    if current_user.role == UserRole.CITY_ADMIN:
+        city_tickets = db.query(Ticket.id).filter(Ticket.city_id == current_user.city_id).subquery()
+        ticket_comments_query = ticket_comments_query.filter(
+            TicketComment.ticket_id.in_(db.query(city_tickets.c.id))
+        )
+    elif current_user.role == UserRole.STATE_ADMIN:
+        from app.models.location import City
+
+        cities = db.query(City).filter(City.state_id == current_user.state_id).all()
+        city_ids = [city.id for city in cities]
+        state_tickets = db.query(Ticket.id).filter(Ticket.city_id.in_(city_ids)).subquery()
+        ticket_comments_query = ticket_comments_query.filter(
+            TicketComment.ticket_id.in_(db.query(state_tickets.c.id))
+        )
+    elif current_user.role == UserRole.ORGANIZATION_ADMIN:
+        org_tickets = (
+            db.query(Ticket.id).filter(Ticket.organization_id == current_user.organization_id).subquery()
+        )
+        ticket_comments_query = ticket_comments_query.filter(
+            TicketComment.ticket_id.in_(db.query(org_tickets.c.id))
+        )
+
+    if start_date:
+        try:
+            start_dt = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
+            ticket_comments_query = ticket_comments_query.filter(TicketComment.created_at >= start_dt)
+        except Exception:
+            pass
+
+    if end_date:
+        try:
+            end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+            ticket_comments_query = ticket_comments_query.filter(TicketComment.created_at <= end_dt)
+        except Exception:
+            pass
+
+    ticket_comments = ticket_comments_query.order_by(TicketComment.created_at.desc()).limit(limit).all()
+
+    for comment in ticket_comments:
+        logs.append(
+            {
+                "id": comment.id,
+                "entity_type": "ticket",
+                "entity_id": comment.ticket_id,
+                "action": comment.comment_type or "comment",
+                "description": comment.comment_text,
+                "user_id": comment.user_id,
+                "user_name": comment.user.full_name if comment.user else "System",
+                "created_at": comment.created_at.isoformat() if comment.created_at else None,
+                "extra_data": comment.extra_data or {},
+            }
+        )
+
+    inventory_transactions_query = db.query(InventoryTransaction)
+
+    if current_user.role == UserRole.CITY_ADMIN:
+        city_inventory = db.query(Inventory.id).filter(Inventory.city_id == current_user.city_id).subquery()
+        inventory_transactions_query = inventory_transactions_query.filter(
+            InventoryTransaction.inventory_id.in_(db.query(city_inventory.c.id))
+        )
+    elif current_user.role == UserRole.STATE_ADMIN:
+        from app.models.location import City
+
+        cities = db.query(City).filter(City.state_id == current_user.state_id).all()
+        city_ids = [city.id for city in cities]
+        state_inventory = db.query(Inventory.id).filter(Inventory.city_id.in_(city_ids)).subquery()
+        inventory_transactions_query = inventory_transactions_query.filter(
+            InventoryTransaction.inventory_id.in_(db.query(state_inventory.c.id))
+        )
+    elif current_user.role == UserRole.ORGANIZATION_ADMIN:
+        org_inventory = (
+            db.query(Inventory.id)
+            .filter(Inventory.organization_id == current_user.organization_id)
+            .subquery()
+        )
+        inventory_transactions_query = inventory_transactions_query.filter(
+            InventoryTransaction.inventory_id.in_(db.query(org_inventory.c.id))
+        )
+
+    if user_id:
+        inventory_transactions_query = inventory_transactions_query.filter(
+            InventoryTransaction.performed_by_id == user_id
+        )
+
+    if start_date:
+        try:
+            start_dt = datetime.fromisoformat(start_date.replace("Z", "+00:00"))
+            inventory_transactions_query = inventory_transactions_query.filter(
+                InventoryTransaction.created_at >= start_dt
+            )
+        except Exception:
+            pass
+
+    if end_date:
+        try:
+            end_dt = datetime.fromisoformat(end_date.replace("Z", "+00:00"))
+            inventory_transactions_query = inventory_transactions_query.filter(
+                InventoryTransaction.created_at <= end_dt
+            )
+        except Exception:
+            pass
+
+    inventory_transactions = (
+        inventory_transactions_query.order_by(InventoryTransaction.created_at.desc()).limit(limit).all()
+    )
+
+    for transaction in inventory_transactions:
+        logs.append(
+            {
+                "id": transaction.id,
+                "entity_type": "inventory",
+                "entity_id": transaction.inventory_id,
+                "action": transaction.transaction_type,
+                "description": (
+                    f"{transaction.transaction_type}: {transaction.quantity} units of "
+                    f"{transaction.part.name if transaction.part else 'part'}. {transaction.notes or ''}"
+                ),
+                "user_id": transaction.performed_by_id,
+                "user_name": transaction.performed_by.full_name if transaction.performed_by else "System",
+                "created_at": transaction.created_at.isoformat() if transaction.created_at else None,
+                "extra_data": {
+                    "part_id": transaction.part_id,
+                    "quantity": transaction.quantity,
+                    "previous_stock": transaction.previous_stock,
+                    "new_stock": transaction.new_stock,
+                },
+            }
+        )
+
+    logs.sort(key=lambda x: x["created_at"] or "", reverse=True)
+
+    return {
+        "logs": logs[:limit],
+        "total": len(logs),
+        "filters": {
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "user_id": user_id,
+            "start_date": start_date,
+            "end_date": end_date,
+        },
+    }
+
+
 @router.get("/tickets/export")
-async def export_tickets_report(
+def export_tickets_report(
     format: str = Query("csv", pattern="^(csv|json)$"),
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
@@ -106,7 +270,7 @@ async def export_tickets_report(
 
 
 @router.get("/inventory/export")
-async def export_inventory_report(
+def export_inventory_report(
     format: str = Query("csv", pattern="^(csv|json)$"),
     city_id: Optional[int] = None,
     low_stock_only: bool = False,
@@ -170,7 +334,7 @@ async def export_inventory_report(
 
 
 @router.get("/audit-logs")
-async def get_audit_logs(
+def get_audit_logs(
     entity_type: Optional[str] = None,  # ticket, inventory, user, etc.
     entity_id: Optional[int] = None,
     user_id: Optional[int] = None,
@@ -186,134 +350,20 @@ async def get_audit_logs(
     db: Session = Depends(get_db)
 ):
     """Get audit logs from database (using TicketComment and InventoryTransaction as activity logs)"""
-    logs = []
-    
-    # Get ticket comments as audit logs
-    ticket_comments_query = db.query(TicketComment)
-    
-    # Apply filters
-    if entity_type == "ticket" and entity_id:
-        ticket_comments_query = ticket_comments_query.filter(TicketComment.ticket_id == entity_id)
-    if user_id:
-        ticket_comments_query = ticket_comments_query.filter(TicketComment.user_id == user_id)
-    
-    # Role-based filtering
-    if current_user.role == UserRole.CITY_ADMIN:
-        # Get tickets in the city
-        city_tickets = db.query(Ticket.id).filter(Ticket.city_id == current_user.city_id).subquery()
-        ticket_comments_query = ticket_comments_query.filter(TicketComment.ticket_id.in_(db.query(city_tickets.c.id)))
-    elif current_user.role == UserRole.STATE_ADMIN:
-        from app.models.location import City
-        cities = db.query(City).filter(City.state_id == current_user.state_id).all()
-        city_ids = [city.id for city in cities]
-        state_tickets = db.query(Ticket.id).filter(Ticket.city_id.in_(city_ids)).subquery()
-        ticket_comments_query = ticket_comments_query.filter(TicketComment.ticket_id.in_(db.query(state_tickets.c.id)))
-    elif current_user.role == UserRole.ORGANIZATION_ADMIN:
-        org_tickets = db.query(Ticket.id).filter(Ticket.organization_id == current_user.organization_id).subquery()
-        ticket_comments_query = ticket_comments_query.filter(TicketComment.ticket_id.in_(db.query(org_tickets.c.id)))
-    
-    # Date filtering
-    if start_date:
-        try:
-            start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
-            ticket_comments_query = ticket_comments_query.filter(TicketComment.created_at >= start_dt)
-        except:
-            pass
-    
-    if end_date:
-        try:
-            end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
-            ticket_comments_query = ticket_comments_query.filter(TicketComment.created_at <= end_dt)
-        except:
-            pass
-    
-    ticket_comments = ticket_comments_query.order_by(TicketComment.created_at.desc()).limit(limit).all()
-    
-    for comment in ticket_comments:
-        logs.append({
-            "id": comment.id,
-            "entity_type": "ticket",
-            "entity_id": comment.ticket_id,
-            "action": comment.comment_type or "comment",
-            "description": comment.comment_text,
-            "user_id": comment.user_id,
-            "user_name": comment.user.full_name if comment.user else "System",
-            "created_at": comment.created_at.isoformat() if comment.created_at else None,
-            "extra_data": comment.extra_data or {}
-        })
-    
-    # Get inventory transactions as audit logs
-    inventory_transactions_query = db.query(InventoryTransaction)
-    
-    # Role-based filtering
-    if current_user.role == UserRole.CITY_ADMIN:
-        city_inventory = db.query(Inventory.id).filter(Inventory.city_id == current_user.city_id).subquery()
-        inventory_transactions_query = inventory_transactions_query.filter(InventoryTransaction.inventory_id.in_(db.query(city_inventory.c.id)))
-    elif current_user.role == UserRole.STATE_ADMIN:
-        from app.models.location import City
-        cities = db.query(City).filter(City.state_id == current_user.state_id).all()
-        city_ids = [city.id for city in cities]
-        state_inventory = db.query(Inventory.id).filter(Inventory.city_id.in_(city_ids)).subquery()
-        inventory_transactions_query = inventory_transactions_query.filter(InventoryTransaction.inventory_id.in_(db.query(state_inventory.c.id)))
-    elif current_user.role == UserRole.ORGANIZATION_ADMIN:
-        org_inventory = db.query(Inventory.id).filter(Inventory.organization_id == current_user.organization_id).subquery()
-        inventory_transactions_query = inventory_transactions_query.filter(InventoryTransaction.inventory_id.in_(db.query(org_inventory.c.id)))
-    
-    if user_id:
-        inventory_transactions_query = inventory_transactions_query.filter(InventoryTransaction.performed_by_id == user_id)
-    
-    if start_date:
-        try:
-            start_dt = datetime.fromisoformat(start_date.replace('Z', '+00:00'))
-            inventory_transactions_query = inventory_transactions_query.filter(InventoryTransaction.created_at >= start_dt)
-        except:
-            pass
-    
-    if end_date:
-        try:
-            end_dt = datetime.fromisoformat(end_date.replace('Z', '+00:00'))
-            inventory_transactions_query = inventory_transactions_query.filter(InventoryTransaction.created_at <= end_dt)
-        except:
-            pass
-    
-    inventory_transactions = inventory_transactions_query.order_by(InventoryTransaction.created_at.desc()).limit(limit).all()
-    
-    for transaction in inventory_transactions:
-        logs.append({
-            "id": transaction.id,
-            "entity_type": "inventory",
-            "entity_id": transaction.inventory_id,
-            "action": transaction.transaction_type,
-            "description": f"{transaction.transaction_type}: {transaction.quantity} units of {transaction.part.name if transaction.part else 'part'}. {transaction.notes or ''}",
-            "user_id": transaction.performed_by_id,
-            "user_name": transaction.performed_by.full_name if transaction.performed_by else "System",
-            "created_at": transaction.created_at.isoformat() if transaction.created_at else None,
-            "extra_data": {
-                "part_id": transaction.part_id,
-                "quantity": transaction.quantity,
-                "previous_stock": transaction.previous_stock,
-                "new_stock": transaction.new_stock
-            }
-        })
-    
-    # Sort by created_at descending
-    logs.sort(key=lambda x: x["created_at"] or "", reverse=True)
-    
-    return {
-        "logs": logs[:limit],
-        "total": len(logs),
-        "filters": {
-            "entity_type": entity_type,
-            "entity_id": entity_id,
-            "user_id": user_id,
-            "start_date": start_date,
-            "end_date": end_date
-        }
-    }
+    return _build_audit_logs_payload(
+        db,
+        current_user,
+        entity_type,
+        entity_id,
+        user_id,
+        start_date,
+        end_date,
+        limit,
+    )
 
 
 @router.get("/audit-logs/export")
-async def export_audit_logs(
+def export_audit_logs(
     format: str = Query("csv", pattern="^(csv|json)$"),
     entity_type: Optional[str] = None,
     entity_id: Optional[int] = None,
@@ -328,15 +378,15 @@ async def export_audit_logs(
     db: Session = Depends(get_db)
 ):
     """Export audit logs from database"""
-    # Get logs using the same logic as get_audit_logs
-    logs_response = await get_audit_logs(
-        entity_type=entity_type,
-        entity_id=entity_id,
-        start_date=start_date,
-        end_date=end_date,
-        limit=10000,
-        current_user=current_user,
-        db=db
+    logs_response = _build_audit_logs_payload(
+        db,
+        current_user,
+        entity_type,
+        entity_id,
+        None,
+        start_date,
+        end_date,
+        10000,
     )
     
     logs = logs_response["logs"]
