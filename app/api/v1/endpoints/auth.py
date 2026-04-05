@@ -19,9 +19,11 @@ from app.core.security import (
     get_pending_password_hash,
 )
 from app.core.config import settings
-from app.core.email import send_email_verification_otp
+from app.core.email import send_email_verification_otp, send_password_reset_otp
 from app.core.password_set_email import create_and_send_set_password_token
 from app.core.email_verification import (
+    OTP_PURPOSE_PASSWORD_RESET,
+    consume_password_reset_otp,
     create_email_verification_otp,
     verify_email_otp,
     consume_verification_otp_for_user,
@@ -53,6 +55,16 @@ class VerifyEmailRequest(BaseModel):
 
 class ResendVerificationRequest(BaseModel):
     email: EmailStr
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordWithOtpRequest(BaseModel):
+    email: EmailStr
+    code: str
+    new_password: str
 
 
 @router.post("/login", response_model=Token)
@@ -389,6 +401,72 @@ async def resend_verification_otp(
     logger.info("resend-verification-otp: sent OK for user id=%s", user.id)
     return {
         "message": "If an account exists and needs verification, a new code has been sent to your email."
+    }
+
+
+@router.post("/forgot-password")
+async def forgot_password(
+    body: ForgotPasswordRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Send a password-reset OTP to the registered email (active accounts with a real password only).
+    Same response whether or not the email exists, to avoid account enumeration.
+    """
+    generic = {"message": "If an account exists for that email, a reset code has been sent."}
+    user = get_user_by_email_ci(db, str(body.email))
+    if not user or not user.is_active:
+        return generic
+    if not user.password_hash or is_pending_password(user.password_hash):
+        return generic
+
+    otp_code = create_email_verification_otp(
+        db, user.id, ttl_minutes=15, purpose=OTP_PURPOSE_PASSWORD_RESET
+    )
+    sent = send_password_reset_otp(user.email, otp_code, user.full_name)
+    if not sent:
+        db.rollback()
+        logger.error("forgot-password: SMTP failed for user id=%s", user.id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Email could not be sent. Please try again later or contact support.",
+        )
+    db.commit()
+    logger.info("forgot-password: reset OTP sent for user id=%s", user.id)
+    return generic
+
+
+@router.post("/reset-password")
+async def reset_password_with_otp(
+    body: ResetPasswordWithOtpRequest,
+    db: Session = Depends(get_db),
+):
+    """Set a new password using the code from forgot-password email."""
+    if not body.new_password or len(body.new_password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 8 characters",
+        )
+    user = get_user_by_email_ci(db, str(body.email))
+    if not user or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired code",
+        )
+    if not user.password_hash or is_pending_password(user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Use the set-password link from your invite email to activate your account.",
+        )
+
+    ok, msg = consume_password_reset_otp(db, user.id, body.code)
+    if not ok:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
+
+    user.password_hash = get_password_hash(body.new_password)
+    db.commit()
+    return {
+        "message": "Your password has been updated. You can sign in with your new password.",
     }
 
 

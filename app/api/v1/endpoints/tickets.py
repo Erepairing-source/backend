@@ -11,7 +11,12 @@ import string
 import uuid
 
 from app.core.database import get_db
-from app.core.location_scope import apply_ticket_query_scope, get_ticket_if_accessible
+from app.core.location_scope import (
+    apply_ticket_query_scope,
+    device_query_for_user,
+    get_device_if_accessible,
+    get_ticket_if_accessible,
+)
 from app.core.config import settings
 from app.core.email import (
     send_otp_email,
@@ -27,6 +32,7 @@ from app.models.ticket_otp import TicketOTP
 from app.models.ticket_start_approval import TicketStartApproval
 from app.models.device import Device
 from app.models.inventory import Part
+from app.models.product import Product
 from app.models.escalation import Escalation, EscalationLevel, EscalationType
 from app.models.notification import Notification, NotificationType, NotificationChannel, NotificationStatus
 from app.services.ai.sentiment_analyzer import SentimentAnalyzerService
@@ -37,6 +43,26 @@ from app.models.sla_policy import SLAType
 
 router = APIRouter()
 triage_service = CaseTriageService()
+
+
+def _parse_ticket_device_id(raw) -> Optional[int]:
+    if raw is None:
+        return None
+    if isinstance(raw, str) and not raw.strip():
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_service_coord(v) -> Optional[str]:
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    return s[:20]
 
 
 def _ticket_customer_portal_url(ticket_id: int) -> str:
@@ -204,16 +230,82 @@ async def create_ticket(
     if not issue_description:
         raise HTTPException(status_code=400, detail="Issue description is required")
 
-    # Get or create device
+    parsed_device_id = _parse_ticket_device_id(device_id)
+    serial_clean = (str(device_serial).strip() if device_serial is not None else "") or None
+
     device = None
-    if device_id:
-        device = db.query(Device).filter(Device.id == device_id).first()
-    elif device_serial:
-        device = db.query(Device).filter(Device.serial_number == device_serial).first()
-    
-    if not device and device_serial:
-        raise HTTPException(status_code=404, detail="Device not found. Please register device first.")
-    
+    if current_user.role == UserRole.CUSTOMER:
+        if parsed_device_id is not None:
+            device = (
+                db.query(Device)
+                .filter(
+                    Device.id == parsed_device_id,
+                    Device.customer_id == current_user.id,
+                )
+                .first()
+            )
+            if not device:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Device not found or not registered to your account.",
+                )
+        elif serial_clean:
+            device = (
+                db.query(Device)
+                .filter(
+                    Device.serial_number == serial_clean,
+                    Device.customer_id == current_user.id,
+                )
+                .first()
+            )
+            if not device:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Device not found. Register your device first or select it from your list.",
+                )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Please select a registered device for this service request.",
+            )
+    else:
+        if parsed_device_id is not None:
+            device = get_device_if_accessible(db, parsed_device_id, current_user)
+            if not device:
+                raise HTTPException(status_code=404, detail="Device not found")
+        elif serial_clean:
+            device = (
+                device_query_for_user(db, current_user)
+                .filter(Device.serial_number == serial_clean)
+                .first()
+            )
+            if not device:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Device not found for this serial number in your scope.",
+                )
+
+    organization_id = current_user.organization_id
+    if device:
+        if device.organization_id:
+            organization_id = organization_id or device.organization_id
+        if not organization_id and device.product_id:
+            prod = db.query(Product).filter(Product.id == device.product_id).first()
+            if prod and prod.organization_id:
+                organization_id = prod.organization_id
+
+    if not organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "No organization could be determined for this ticket. "
+                "Ensure your account is linked to your manufacturer or service provider."
+            ),
+        )
+
+    service_latitude = _normalize_service_coord(service_latitude)
+    service_longitude = _normalize_service_coord(service_longitude)
+
     # Generate ticket number
     ticket_number = f"TKT-{datetime.utcnow().strftime('%Y%m%d')}-{db.query(Ticket).count() + 1:06d}"
     
@@ -227,11 +319,14 @@ async def create_ticket(
     
     # Create ticket
     try:
-        priority_enum = TicketPriority(priority) if isinstance(priority, str) else priority
+        if isinstance(priority, str):
+            priority_enum = TicketPriority(priority.strip().lower())
+        elif isinstance(priority, TicketPriority):
+            priority_enum = priority
+        else:
+            priority_enum = TicketPriority.MEDIUM
     except ValueError:
         priority_enum = TicketPriority.MEDIUM
-
-    organization_id = current_user.organization_id or (device.organization_id if device else None)
 
     ticket = Ticket(
         ticket_number=ticket_number,
@@ -250,7 +345,7 @@ async def create_ticket(
         service_address=service_address,
         service_latitude=service_latitude,
         service_longitude=service_longitude,
-        priority=priority_enum or TicketPriority(triage_result.get("suggested_priority", "medium")),
+        priority=priority_enum,
         issue_category=triage_result.get("suggested_category"),
         ai_triage_category=triage_result.get("suggested_category"),
         ai_triage_confidence=triage_result.get("confidence_score"),

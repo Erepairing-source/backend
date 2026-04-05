@@ -6,7 +6,7 @@ import string
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.models.email_verification_otp import EmailVerificationOTP
@@ -25,9 +25,16 @@ def get_user_by_email_ci(db: Session, email: str) -> Optional[User]:
     return db.query(User).filter(func.lower(User.email) == n).first()
 
 
-def create_email_verification_otp(db: Session, user_id: int, ttl_minutes: int = 15) -> str:
+OTP_PURPOSE_EMAIL = "email_verification"
+OTP_PURPOSE_PASSWORD_RESET = "password_reset"
+
+
+def create_email_verification_otp(
+    db: Session, user_id: int, ttl_minutes: int = 15, purpose: str = OTP_PURPOSE_EMAIL
+) -> str:
     """
     Invalidate unused OTPs for this user, create a new one, return plain code.
+    purpose: email_verification (default) or password_reset.
     """
     now = datetime.now(timezone.utc)
     db.query(EmailVerificationOTP).filter(
@@ -36,7 +43,9 @@ def create_email_verification_otp(db: Session, user_id: int, ttl_minutes: int = 
     ).update({"consumed_at": now})
     code = _generate_code(6)
     expires = now + timedelta(minutes=ttl_minutes)
-    row = EmailVerificationOTP(user_id=user_id, otp_code=code, expires_at=expires)
+    row = EmailVerificationOTP(
+        user_id=user_id, otp_code=code, expires_at=expires, purpose=purpose
+    )
     db.add(row)
     db.flush()
     return code
@@ -63,6 +72,10 @@ def verify_email_otp(db: Session, email: str, code: str, user_query) -> tuple[bo
             EmailVerificationOTP.otp_code == code,
             EmailVerificationOTP.consumed_at.is_(None),
             EmailVerificationOTP.expires_at > now,
+            or_(
+                EmailVerificationOTP.purpose == OTP_PURPOSE_EMAIL,
+                EmailVerificationOTP.purpose.is_(None),
+            ),
         )
         .order_by(EmailVerificationOTP.created_at.desc())
         .first()
@@ -95,6 +108,10 @@ def consume_verification_otp_for_user(
             EmailVerificationOTP.otp_code == code,
             EmailVerificationOTP.consumed_at.is_(None),
             EmailVerificationOTP.expires_at > now,
+            or_(
+                EmailVerificationOTP.purpose == OTP_PURPOSE_EMAIL,
+                EmailVerificationOTP.purpose.is_(None),
+            ),
         )
         .order_by(EmailVerificationOTP.created_at.desc())
         .first()
@@ -106,4 +123,32 @@ def consume_verification_otp_for_user(
     user = db.query(User).filter(User.id == user_id).first()
     if user:
         user.is_verified = True
+    return True, "OK"
+
+
+def consume_password_reset_otp(db: Session, user_id: int, code: str) -> tuple[bool, str]:
+    """
+    Validate password-reset OTP, mark consumed. Does not verify email or commit.
+    """
+    code = (code or "").strip()
+    if len(code) < 4:
+        return False, "Invalid code"
+
+    now = datetime.now(timezone.utc)
+    row = (
+        db.query(EmailVerificationOTP)
+        .filter(
+            EmailVerificationOTP.user_id == user_id,
+            EmailVerificationOTP.otp_code == code,
+            EmailVerificationOTP.consumed_at.is_(None),
+            EmailVerificationOTP.expires_at > now,
+            EmailVerificationOTP.purpose == OTP_PURPOSE_PASSWORD_RESET,
+        )
+        .order_by(EmailVerificationOTP.created_at.desc())
+        .first()
+    )
+    if not row:
+        return False, "Invalid or expired code"
+
+    row.consumed_at = now
     return True, "OK"

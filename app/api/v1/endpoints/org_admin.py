@@ -36,6 +36,7 @@ from app.models.inventory import Part, Inventory, InventoryTransaction, ReorderR
 from app.models.location import Country, State, City
 from app.models.subscription import Subscription, Plan, BillingPeriod
 from app.models.product_part import ProductPart
+from app.schemas.organization import OrganizationAdminSelfUpdate
 from app.services.ai.route_optimization import RouteOptimizationService
 
 router = APIRouter()
@@ -152,6 +153,102 @@ async def get_org_admin_dashboard(
             status_code=500,
             detail="Error loading dashboard. Please try again or contact support.",
         )
+
+
+@router.put("/organization")
+async def update_my_organization(
+    payload: OrganizationAdminSelfUpdate,
+    current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
+    db: Session = Depends(get_db),
+):
+    """Update the signed-in org admin's organization (contact, address, location)."""
+    if not current_user.organization_id:
+        raise HTTPException(status_code=400, detail="User must be associated with an organization")
+
+    org = db.query(Organization).filter(Organization.id == current_user.organization_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    name = (payload.name or "").strip()
+    email = (payload.email or "").strip()
+    phone = (payload.phone or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Organization name is required")
+    if not email:
+        raise HTTPException(status_code=400, detail="Email is required")
+    if not phone:
+        raise HTTPException(status_code=400, detail="Phone is required")
+
+    dup = (
+        db.query(Organization)
+        .filter(Organization.email == email, Organization.id != org.id)
+        .first()
+    )
+    if dup:
+        raise HTTPException(status_code=400, detail="This email is already used by another organization")
+
+    org.name = name
+    org.email = email
+    org.phone = phone
+    addr = payload.address
+    org.address = (addr.strip() if isinstance(addr, str) and addr.strip() else None)
+
+    city_id = payload.city_id
+    if city_id is not None:
+        try:
+            city_id = int(city_id)
+        except (TypeError, ValueError):
+            city_id = None
+
+    state_id = payload.state_id
+    state_id_int = None
+    if state_id is not None:
+        try:
+            state_id_int = int(state_id)
+        except (TypeError, ValueError):
+            state_id_int = None
+
+    city_name = (payload.city_name or "").strip() or None
+    if not city_id and city_name and state_id_int is not None:
+        row = (
+            db.query(City)
+            .filter(City.state_id == state_id_int, City.name == city_name)
+            .first()
+        )
+        if row:
+            city_id = row.id
+
+    org.country_id = payload.country_id
+    org.state_id = state_id_int
+    org.city_id = city_id
+
+    db.commit()
+    db.refresh(org)
+
+    org = db.query(Organization).options(
+        joinedload(Organization.country),
+        joinedload(Organization.state),
+        joinedload(Organization.city),
+    ).filter(Organization.id == org.id).first()
+
+    return {
+        "message": "Organization updated successfully",
+        "organization": {
+            "id": org.id,
+            "name": org.name,
+            "org_type": org.org_type.value if org.org_type else None,
+            "email": org.email,
+            "phone": org.phone,
+            "address": org.address,
+            "is_active": org.is_active,
+            "country_id": org.country_id,
+            "state_id": org.state_id,
+            "city_id": org.city_id,
+            "country_name": org.country.name if org.country else None,
+            "state_name": org.state.name if org.state else None,
+            "city_name": org.city.name if org.city else None,
+        },
+    }
 
 
 # Product Catalog Management

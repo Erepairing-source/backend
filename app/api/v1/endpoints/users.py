@@ -14,11 +14,10 @@ import pandas as pd
 from app.core.database import get_db
 from app.core.location_scope import apply_user_query_scope
 from app.core.location_resolution import materialize_user_location_ids
-from app.core.config import settings
 from app.core.permissions import get_current_user, require_role
 from app.core.security import get_password_hash, get_pending_password_hash
 from app.core.password_set_email import create_and_send_set_password_token
-from app.core.email import send_credentials_email, send_email_verification_otp
+from app.core.email import send_credentials_email
 from app.core.email_verification import create_email_verification_otp
 from app.models.user import User, UserRole
 from app.models.location import Country, State, City
@@ -218,11 +217,14 @@ async def create_user(
         create_and_send_set_password_token(db, user)
     else:
         otp_code = create_email_verification_otp(db, user.id, ttl_minutes=15)
-        send_email_verification_otp(
+        send_credentials_email(
             user.email,
-            otp_code,
             user.full_name,
-            context="new user account",
+            str(user_data.password).strip(),
+            email_verification_otp=otp_code,
+            email_subject="Your eRepairing account — sign in details",
+            body_intro="An administrator created your eRepairing account. Use the email and password below to sign in.",
+            subtitle="Your account is ready. Sign in with the details below, then verify your email with the code.",
         )
     db.commit()
     db.refresh(user)
@@ -362,7 +364,6 @@ async def bulk_create_customers(
                 email,
                 full_name,
                 password,
-                login_url,
                 email_verification_otp=otp_code,
             )
         created += 1
