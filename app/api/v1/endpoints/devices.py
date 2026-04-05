@@ -110,7 +110,7 @@ def _build_warranty_summary(warranty_details: Optional[dict]) -> Optional[str]:
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
-async def register_device(
+def register_device(
     device_data: dict = Body(...),
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -222,7 +222,7 @@ async def decode_qr(
 
 
 @router.post("/register-with-files", status_code=status.HTTP_201_CREATED)
-async def register_device_with_files(
+def register_device_with_files(
     serial_number: str = Form(...),
     model_number: str = Form(...),
     product_category: str = Form(...),
@@ -306,7 +306,7 @@ async def register_device_with_files(
 
 
 @router.get("/")
-async def list_devices(
+def list_devices(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -350,7 +350,7 @@ async def list_devices(
 
 
 @router.get("/{device_id}")
-async def get_device(
+def get_device(
     device_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)

@@ -41,7 +41,7 @@ async def geocode_address(
 
 
 @router.get("/static-map")
-async def get_static_map(
+def get_static_map(
     latitude: float = Query(...),
     longitude: float = Query(...),
     zoom: int = Query(14),

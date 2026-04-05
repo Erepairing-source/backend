@@ -2,9 +2,51 @@
 Background OEM warranty sync job
 """
 import asyncio
+import logging
+import os
 from datetime import datetime
 
 from app.core.config import settings
+
+logger = logging.getLogger(__name__)
+
+_oem_leader_fp = None
+
+
+def try_acquire_oem_sync_leader_lock() -> bool:
+    """
+    With multiple Uvicorn workers, only one process should run the OEM sync loop.
+    Without this, each worker starts identical background jobs (extra DB/API load).
+    Uses non-blocking flock on POSIX. On Windows (no fcntl), returns True.
+    """
+    global _oem_leader_fp
+    try:
+        import fcntl
+    except ImportError:
+        return True
+
+    lock_path = os.environ.get("OEM_SYNC_LOCK_PATH", "/tmp/erepairing_oem_sync.lock")
+    fp = None
+    try:
+        fp = open(lock_path, "a+")
+        fcntl.flock(fp.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fp.seek(0)
+        fp.truncate()
+        fp.write(f"{os.getpid()}\n")
+        fp.flush()
+        _oem_leader_fp = fp
+        logger.info("OEM warranty sync: this worker holds the leader lock")
+        return True
+    except BlockingIOError:
+        if fp is not None:
+            fp.close()
+        logger.info("OEM warranty sync: another worker is leader; skipping background loop here")
+        return False
+    except OSError as e:
+        if fp is not None:
+            fp.close()
+        logger.warning("OEM warranty sync: leader lock failed (%s); starting loop in this worker", e)
+        return True
 from app.core.database import SessionLocal
 from app.models.integration import Integration, IntegrationType
 from app.models.device import Device
@@ -94,5 +136,5 @@ async def start_oem_sync_loop():
         try:
             await asyncio.to_thread(run_sync_cycle_blocking)
         except Exception:
-            pass
+            logger.exception("OEM warranty sync cycle failed")
         await asyncio.sleep(max(5, settings.OEM_WARRANTY_SYNC_INTERVAL_MINUTES) * 60)

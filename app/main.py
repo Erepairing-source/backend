@@ -3,15 +3,17 @@ eRepairing.com - Main FastAPI Application
 """
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 import asyncio
 import os
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.database import Base, engine
 from app.api.v1.api import api_router
-from app.services.oem_sync_job import start_oem_sync_loop
+from app.services.oem_sync_job import start_oem_sync_loop, try_acquire_oem_sync_leader_lock
 
 # Import all models to ensure they're registered
 from app.models import (
@@ -65,7 +67,12 @@ async def startup_event():
 
     if settings.OEM_WARRANTY_SYNC_ENABLED:
         run_main = os.environ.get("RUN_MAIN")
-        if not settings.DEBUG or run_main == "true":
+        # Dev (--reload): only the reloader child should start the loop (matches prior behavior).
+        # Prod (multi-worker): flock so only one worker runs OEM sync.
+        start_oem = (settings.DEBUG and run_main == "true") or (
+            not settings.DEBUG and try_acquire_oem_sync_leader_lock()
+        )
+        if start_oem:
             asyncio.create_task(start_oem_sync_loop())
 
 # CORS middleware
@@ -93,7 +100,7 @@ app.include_router(api_router, prefix="/api/v1")
 
 
 @app.get("/")
-async def root():
+def root():
     return {
         "message": "eRepairing.com API",
         "version": "1.0.0",
@@ -102,7 +109,21 @@ async def root():
 
 
 @app.get("/health")
-async def health_check():
+def health_check():
     return {"status": "healthy"}
+
+
+@app.get("/health/ready")
+def health_ready():
+    """For load balancers: confirms the process can reach the database (runs in a thread pool)."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return {"status": "ready", "database": "ok"}
+    except Exception:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "database": "unavailable"},
+        )
 
 

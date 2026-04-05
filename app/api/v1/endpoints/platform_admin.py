@@ -17,7 +17,7 @@ router = APIRouter()
 
 
 @router.get("/plans/public")
-async def list_plans_public(db: Session = Depends(get_db)):
+def list_plans_public(db: Session = Depends(get_db)):
     """Public endpoint to list all visible subscription plans (no auth required)"""
     plans = db.query(Plan).filter(Plan.is_visible == True).order_by(Plan.display_order).all()
     
@@ -40,7 +40,7 @@ async def list_plans_public(db: Session = Depends(get_db)):
 
 
 @router.get("/plans")
-async def list_plans(
+def list_plans(
     current_user: User = Depends(require_role([UserRole.PLATFORM_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -66,7 +66,7 @@ async def list_plans(
 
 
 @router.post("/plans")
-async def create_plan(
+def create_plan(
     plan_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.PLATFORM_ADMIN])),
     db: Session = Depends(get_db)
@@ -106,7 +106,7 @@ async def create_plan(
 
 
 @router.put("/plans/{plan_id}")
-async def update_plan(
+def update_plan(
     plan_id: int,
     plan_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.PLATFORM_ADMIN])),
@@ -158,7 +158,7 @@ async def update_plan(
 
 
 @router.delete("/plans/{plan_id}")
-async def delete_plan(
+def delete_plan(
     plan_id: int,
     current_user: User = Depends(require_role([UserRole.PLATFORM_ADMIN])),
     db: Session = Depends(get_db)
@@ -175,7 +175,7 @@ async def delete_plan(
 
 
 @router.get("/organizations")
-async def list_all_organizations(
+def list_all_organizations(
     skip: int = 0,
     limit: int = 100,
     current_user: User = Depends(require_role([UserRole.PLATFORM_ADMIN])),
@@ -253,7 +253,7 @@ async def list_all_organizations(
 
 
 @router.get("/organizations/{organization_id}/details")
-async def get_organization_details(
+def get_organization_details(
     organization_id: int,
     current_user: User = Depends(require_role([UserRole.PLATFORM_ADMIN])),
     db: Session = Depends(get_db)
@@ -380,7 +380,7 @@ async def get_organization_details(
 
 
 @router.get("/organizations/{organization_id}/kpis")
-async def get_organization_kpis(
+def get_organization_kpis(
     organization_id: int,
     current_user: User = Depends(require_role([UserRole.PLATFORM_ADMIN])),
     db: Session = Depends(get_db)
@@ -406,7 +406,7 @@ async def get_organization_kpis(
 
 
 @router.post("/vendors")
-async def create_vendor(
+def create_vendor(
     vendor_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.PLATFORM_ADMIN])),
     db: Session = Depends(get_db)
@@ -534,7 +534,7 @@ async def create_vendor(
 
 
 @router.get("/vendors")
-async def list_vendors(
+def list_vendors(
     current_user: User = Depends(require_role([UserRole.PLATFORM_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -654,7 +654,7 @@ async def list_vendors(
 
 
 @router.get("/vendors/{vendor_id}/details")
-async def get_vendor_details(
+def get_vendor_details(
     vendor_id: int,
     current_user: User = Depends(require_role([UserRole.PLATFORM_ADMIN])),
     db: Session = Depends(get_db)
@@ -813,7 +813,7 @@ async def get_vendor_details(
 
 
 @router.get("/analytics")
-async def get_platform_analytics(
+def get_platform_analytics(
     period: str = "30d",  # 7d, 30d, 90d, 1y, all
     current_user: User = Depends(require_role([UserRole.PLATFORM_ADMIN])),
     db: Session = Depends(get_db)
@@ -1103,7 +1103,7 @@ async def get_platform_analytics(
 
 
 @router.get("/settings")
-async def get_platform_settings(
+def get_platform_settings(
     category: str = None,
     current_user: User = Depends(require_role([UserRole.PLATFORM_ADMIN])),
     db: Session = Depends(get_db)
@@ -1154,7 +1154,7 @@ async def get_platform_settings(
 
 
 @router.put("/settings")
-async def update_platform_settings(
+def update_platform_settings(
     settings_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.PLATFORM_ADMIN])),
     db: Session = Depends(get_db)
@@ -1211,7 +1211,7 @@ async def update_platform_settings(
 
 
 @router.post("/settings/initialize")
-async def initialize_default_settings(
+def initialize_default_settings(
     current_user: User = Depends(require_role([UserRole.PLATFORM_ADMIN])),
     db: Session = Depends(get_db)
 ):

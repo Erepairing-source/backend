@@ -19,7 +19,7 @@ oem_service = OEMWarrantyService()
 
 
 @router.get("/check")
-async def check_warranty(
+def check_warranty(
     serial_number: str,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -58,7 +58,7 @@ async def check_warranty(
 
 
 @router.post("/register")
-async def register_warranty(
+def register_warranty(
     device_id: int,
     warranty_type: str,
     start_date: datetime,

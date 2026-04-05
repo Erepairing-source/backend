@@ -417,7 +417,7 @@ async def create_ticket(
 
 
 @router.get("/", response_model=List[dict])
-async def list_tickets(
+def list_tickets(
     status_filter: Optional[TicketStatus] = None,
     priority_filter: Optional[TicketPriority] = None,
     city_id: Optional[int] = None,
@@ -593,7 +593,7 @@ async def get_ticket(
 
 
 @router.get("/{ticket_id}/tracking")
-async def get_ticket_tracking(
+def get_ticket_tracking(
     ticket_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -611,7 +611,7 @@ async def get_ticket_tracking(
 
 
 @router.get("/{ticket_id}/estimate")
-async def get_ticket_estimate(
+def get_ticket_estimate(
     ticket_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -651,7 +651,7 @@ async def get_ticket_estimate(
 
 
 @router.post("/{ticket_id}/assign")
-async def assign_ticket(
+def assign_ticket(
     ticket_id: int,
     engineer_id: Optional[int] = None,
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN, UserRole.STATE_ADMIN, UserRole.ORGANIZATION_ADMIN])),
@@ -699,7 +699,7 @@ async def assign_ticket(
 
 
 @router.post("/{ticket_id}/start")
-async def start_ticket(
+def start_ticket(
     ticket_id: int,
     start_data: dict = Body(default={}),
     current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER])),
@@ -779,7 +779,7 @@ async def start_ticket(
 
 
 @router.post("/{ticket_id}/request-start-otp")
-async def request_start_otp(
+def request_start_otp(
     ticket_id: int,
     current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER])),
     db: Session = Depends(get_db)
@@ -830,7 +830,7 @@ async def request_start_otp(
 
 
 @router.post("/{ticket_id}/verify-start-otp")
-async def verify_start_otp(
+def verify_start_otp(
     ticket_id: int,
     body: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER])),
@@ -883,7 +883,7 @@ async def verify_start_otp(
 
 
 @router.post("/{ticket_id}/request-completion-otp")
-async def request_completion_otp(
+def request_completion_otp(
     ticket_id: int,
     current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER])),
     db: Session = Depends(get_db)
@@ -928,7 +928,7 @@ async def request_completion_otp(
 
 
 @router.post("/{ticket_id}/eta")
-async def update_ticket_eta(
+def update_ticket_eta(
     ticket_id: int,
     eta_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER])),
@@ -978,7 +978,7 @@ async def update_ticket_eta(
 
 
 @router.post("/{ticket_id}/resolve")
-async def resolve_ticket(
+def resolve_ticket(
     ticket_id: int,
     resolution_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER])),
@@ -1062,7 +1062,7 @@ async def resolve_ticket(
 
 
 @router.post("/{ticket_id}/resolution-photo")
-async def upload_resolution_photo(
+def upload_resolution_photo(
     ticket_id: int,
     photo: UploadFile = File(...),
     current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER])),
@@ -1078,7 +1078,7 @@ async def upload_resolution_photo(
 
 
 @router.post("/{ticket_id}/parts/ordered")
-async def mark_parts_ordered(
+def mark_parts_ordered(
     ticket_id: int,
     parts_data: dict = Body(default={}),
     current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER, UserRole.CITY_ADMIN, UserRole.STATE_ADMIN, UserRole.ORGANIZATION_ADMIN])),
@@ -1112,7 +1112,7 @@ async def mark_parts_ordered(
 
 
 @router.post("/{ticket_id}/parts/photo")
-async def upload_part_photo(
+def upload_part_photo(
     ticket_id: int,
     photo: UploadFile = File(...),
     current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER])),
@@ -1128,7 +1128,7 @@ async def upload_part_photo(
 
 
 @router.post("/{ticket_id}/parts/received")
-async def mark_parts_received(
+def mark_parts_received(
     ticket_id: int,
     parts_data: dict = Body(default={}),
     current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER, UserRole.CITY_ADMIN, UserRole.STATE_ADMIN, UserRole.ORGANIZATION_ADMIN])),
@@ -1163,7 +1163,7 @@ async def mark_parts_received(
 
 
 @router.post("/{ticket_id}/parts/request")
-async def request_parts_approval(
+def request_parts_approval(
     ticket_id: int,
     parts_data: dict = Body(default={}),
     current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER])),
@@ -1202,7 +1202,7 @@ async def request_parts_approval(
 
 
 @router.post("/{ticket_id}/arrival")
-async def confirm_arrival(
+def confirm_arrival(
     ticket_id: int,
     arrival_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER])),
@@ -1277,7 +1277,7 @@ async def submit_feedback(
 
 
 @router.post("/{ticket_id}/escalate")
-async def escalate_ticket(
+def escalate_ticket(
     ticket_id: int,
     escalation_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER, UserRole.CITY_ADMIN])),
@@ -1314,7 +1314,7 @@ async def escalate_ticket(
 
 
 @router.get("/assigned/calendar")
-async def export_assigned_calendar(
+def export_assigned_calendar(
     current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER])),
     db: Session = Depends(get_db)
 ):
@@ -1367,7 +1367,7 @@ async def export_assigned_calendar(
 
 
 @router.post("/{ticket_id}/accept")
-async def accept_ticket(
+def accept_ticket(
     ticket_id: int,
     current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER])),
     db: Session = Depends(get_db)
@@ -1409,7 +1409,7 @@ async def accept_ticket(
 
 
 @router.post("/{ticket_id}/approve-start")
-async def approve_start(
+def approve_start(
     ticket_id: int,
     current_user: User = Depends(require_role([
         UserRole.CITY_ADMIN,
@@ -1445,7 +1445,7 @@ async def approve_start(
 
 
 @router.get("/{ticket_id}/start-approval-status")
-async def get_start_approval_status(
+def get_start_approval_status(
     ticket_id: int,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
@@ -1463,7 +1463,7 @@ async def get_start_approval_status(
 
 
 @router.post("/{ticket_id}/reject")
-async def reject_ticket(
+def reject_ticket(
     ticket_id: int,
     rejection_reason: str,
     current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER])),
@@ -1501,7 +1501,7 @@ async def reject_ticket(
 
 
 @router.post("/{ticket_id}/reschedule")
-async def reschedule_ticket(
+def reschedule_ticket(
     ticket_id: int,
     reschedule_data: dict = Body(...),
     current_user: User = Depends(get_current_user),

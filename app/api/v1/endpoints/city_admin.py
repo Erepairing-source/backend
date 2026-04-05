@@ -59,7 +59,7 @@ def pick_available_engineer(db: Session, city_id: int, organization_id: Optional
 
 
 @router.get("/dashboard")
-async def get_city_dashboard(
+def get_city_dashboard(
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -152,7 +152,7 @@ async def get_city_dashboard(
 
 
 @router.get("/tickets")
-async def list_city_tickets(
+def list_city_tickets(
     status_filter: Optional[str] = None,
     priority_filter: Optional[str] = None,
     partner_id: Optional[int] = None,
@@ -221,7 +221,7 @@ async def list_city_tickets(
 
 
 @router.get("/engineers")
-async def list_city_engineers(
+def list_city_engineers(
     available_only: bool = False,
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
     db: Session = Depends(get_db)
@@ -263,7 +263,7 @@ async def list_city_engineers(
 
 
 @router.get("/complaints")
-async def list_negative_complaints(
+def list_negative_complaints(
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -296,7 +296,7 @@ async def list_negative_complaints(
 
 
 @router.post("/city-hq")
-async def update_city_hq(
+def update_city_hq(
     payload: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
     db: Session = Depends(get_db)
@@ -315,7 +315,7 @@ async def update_city_hq(
 
 
 @router.post("/complaints/{ticket_id}/follow-up")
-async def create_complaint_follow_up(
+def create_complaint_follow_up(
     ticket_id: int,
     follow_up_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
@@ -446,7 +446,7 @@ async def create_complaint_follow_up(
 
 
 @router.get("/tickets/pending-start-approvals")
-async def get_pending_start_approvals(
+def get_pending_start_approvals(
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -479,7 +479,7 @@ async def get_pending_start_approvals(
 
 
 @router.get("/tickets/pending-parts-approval")
-async def get_pending_parts_approval(
+def get_pending_parts_approval(
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -582,7 +582,7 @@ async def get_pending_parts_approval(
 
 
 @router.post("/tickets/{ticket_id}/approve-parts")
-async def approve_parts_usage(
+def approve_parts_usage(
     ticket_id: int,
     approval_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
@@ -697,7 +697,7 @@ async def approve_parts_usage(
 
 
 @router.post("/tickets/{ticket_id}/approve-parts-request")
-async def approve_parts_request(
+def approve_parts_request(
     ticket_id: int,
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
     db: Session = Depends(get_db),
@@ -765,7 +765,7 @@ async def approve_parts_request(
 
 
 @router.post("/tickets/{ticket_id}/reject-parts")
-async def reject_parts_usage(
+def reject_parts_usage(
     ticket_id: int,
     rejection_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
@@ -801,7 +801,7 @@ async def reject_parts_usage(
 
 
 @router.get("/inventory")
-async def get_city_inventory(
+def get_city_inventory(
     low_stock_only: bool = False,
     slow_moving_days: int = 30,
     ageing_only: bool = False,
@@ -868,7 +868,7 @@ async def get_city_inventory(
 
 
 @router.post("/inventory/{inventory_id}/thresholds")
-async def update_inventory_thresholds(
+def update_inventory_thresholds(
     inventory_id: int,
     payload: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
@@ -918,7 +918,7 @@ async def update_inventory_thresholds(
 
 
 @router.get("/inventory/reorder-requests")
-async def list_reorder_requests(
+def list_reorder_requests(
     status_filter: Optional[str] = None,
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
     db: Session = Depends(get_db)
@@ -951,7 +951,7 @@ async def list_reorder_requests(
 
 
 @router.post("/inventory/reorder-requests")
-async def create_reorder_request(
+def create_reorder_request(
     payload: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
     db: Session = Depends(get_db)
@@ -1014,7 +1014,7 @@ async def create_reorder_request(
 
 
 @router.post("/inventory/reorder-requests/{request_id}/approve")
-async def approve_reorder_request(
+def approve_reorder_request(
     request_id: int,
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
     db: Session = Depends(get_db)
@@ -1036,7 +1036,7 @@ async def approve_reorder_request(
 
 
 @router.post("/inventory/reorder-requests/{request_id}/reject")
-async def reject_reorder_request(
+def reject_reorder_request(
     request_id: int,
     payload: dict = Body(default={}),
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
@@ -1059,7 +1059,7 @@ async def reject_reorder_request(
 
 
 @router.post("/inventory/restock/auto")
-async def auto_create_restock_requests(
+def auto_create_restock_requests(
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -1095,7 +1095,7 @@ async def auto_create_restock_requests(
 
 
 @router.post("/inventory/returns")
-async def record_inventory_return(
+def record_inventory_return(
     payload: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
     db: Session = Depends(get_db)
@@ -1150,7 +1150,7 @@ async def record_inventory_return(
 
 
 @router.post("/tickets/{ticket_id}/reassign")
-async def reassign_ticket(
+def reassign_ticket(
     ticket_id: int,
     reassign_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
@@ -1200,7 +1200,7 @@ async def reassign_ticket(
 
 
 @router.post("/tickets/bulk-reassign")
-async def bulk_reassign_tickets(
+def bulk_reassign_tickets(
     reassign_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
     db: Session = Depends(get_db)
@@ -1244,7 +1244,7 @@ async def bulk_reassign_tickets(
 
 
 @router.post("/tickets/auto-redispatch")
-async def auto_redispatch_tickets(
+def auto_redispatch_tickets(
     payload: dict = Body(default={}),
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
     db: Session = Depends(get_db)
@@ -1305,7 +1305,7 @@ async def auto_redispatch_tickets(
 
 
 @router.post("/tickets/{ticket_id}/priority")
-async def update_ticket_priority(
+def update_ticket_priority(
     ticket_id: int,
     payload: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
@@ -1340,7 +1340,7 @@ async def update_ticket_priority(
 
 
 @router.post("/tickets/{ticket_id}/freeze-assignment")
-async def freeze_ticket_assignment(
+def freeze_ticket_assignment(
     ticket_id: int,
     payload: dict = Body(default={}),
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
@@ -1368,7 +1368,7 @@ async def freeze_ticket_assignment(
 
 
 @router.get("/tickets/redispatch-suggestions")
-async def get_redispatch_suggestions(
+def get_redispatch_suggestions(
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -1466,7 +1466,7 @@ async def get_city_fraud_anomalies(
 
 
 @router.get("/tickets/redispatch-suggestions")
-async def redispatch_suggestions(
+def redispatch_suggestions(
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -1512,7 +1512,7 @@ async def redispatch_suggestions(
 
 
 @router.get("/fraud-anomalies")
-async def fraud_anomalies(
+def fraud_anomalies(
     days: int = 30,
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
     db: Session = Depends(get_db)
@@ -1561,7 +1561,7 @@ async def fraud_anomalies(
 
 
 @router.get("/tickets/{ticket_id}/quality-check")
-async def get_ticket_for_quality_check(
+def get_ticket_for_quality_check(
     ticket_id: int,
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
     db: Session = Depends(get_db)
@@ -1610,7 +1610,7 @@ async def get_ticket_for_quality_check(
 
 
 @router.post("/tickets/{ticket_id}/quality-check")
-async def submit_quality_check(
+def submit_quality_check(
     ticket_id: int,
     quality_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),

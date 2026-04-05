@@ -66,7 +66,7 @@ def pick_available_engineer_state(db: Session, state_id: int, city_id: Optional[
 
 
 @router.get("/dashboard")
-async def get_state_dashboard(
+def get_state_dashboard(
     time_range: str = "30d",
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
@@ -199,7 +199,7 @@ def _city_metrics_row(city, db: Session, current_user: User) -> dict:
 
 
 @router.get("/cities")
-async def get_state_cities(
+def get_state_cities(
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -261,7 +261,7 @@ async def get_state_cities(
 
 
 @router.get("/resource-balancing")
-async def get_resource_balancing(
+def get_resource_balancing(
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -297,7 +297,7 @@ async def get_resource_balancing(
 
 
 @router.post("/inventory/transfer")
-async def transfer_inventory(
+def transfer_inventory(
     transfer_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
@@ -419,7 +419,7 @@ async def transfer_inventory(
 
 
 @router.get("/inventory/parts")
-async def get_state_inventory_parts(
+def get_state_inventory_parts(
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -456,7 +456,7 @@ async def get_state_inventory_parts(
 
 
 @router.get("/engineers/reallocations")
-async def list_engineers_for_reallocation(
+def list_engineers_for_reallocation(
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -494,7 +494,7 @@ async def list_engineers_for_reallocation(
 
 
 @router.post("/engineers/reallocate")
-async def reallocate_engineer(
+def reallocate_engineer(
     reallocate_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
@@ -549,7 +549,7 @@ async def reallocate_engineer(
 
 
 @router.get("/cities/{city_id}/overview")
-async def get_city_overview(
+def get_city_overview(
     city_id: int,
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
@@ -580,7 +580,7 @@ async def get_city_overview(
 
 
 @router.get("/cities/{city_id}/tickets")
-async def get_city_tickets(
+def get_city_tickets(
     city_id: int,
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
@@ -609,7 +609,7 @@ async def get_city_tickets(
 
 
 @router.get("/cities/{city_id}/engineers")
-async def get_city_engineers(
+def get_city_engineers(
     city_id: int,
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
@@ -650,7 +650,7 @@ async def get_city_engineers(
 
 
 @router.get("/cities/{city_id}/inventory")
-async def get_city_inventory(
+def get_city_inventory(
     city_id: int,
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
@@ -683,7 +683,7 @@ async def get_city_inventory(
 
 
 @router.post("/cities/{city_id}/hq")
-async def update_city_hq_state(
+def update_city_hq_state(
     city_id: int,
     payload: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
@@ -703,7 +703,7 @@ async def update_city_hq_state(
 
 
 @router.get("/cities/{city_id}/complaints")
-async def get_city_complaints(
+def get_city_complaints(
     city_id: int,
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
@@ -735,7 +735,7 @@ async def get_city_complaints(
 
 
 @router.post("/complaints/{ticket_id}/follow-up")
-async def create_state_complaint_follow_up(
+def create_state_complaint_follow_up(
     ticket_id: int,
     follow_up_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
@@ -870,7 +870,7 @@ async def create_state_complaint_follow_up(
 
 
 @router.post("/tickets/bulk-reassign")
-async def bulk_reassign_tickets_state(
+def bulk_reassign_tickets_state(
     reassign_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
@@ -914,7 +914,7 @@ async def bulk_reassign_tickets_state(
 
 
 @router.get("/sla-risk")
-async def get_state_sla_risk(
+def get_state_sla_risk(
     min_risk: float = 0.4,
     city_id: Optional[int] = None,
     status: Optional[str] = None,
@@ -966,7 +966,7 @@ async def get_state_sla_risk(
 
 
 @router.get("/compliance-alerts")
-async def get_state_compliance_alerts(
+def get_state_compliance_alerts(
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -1018,7 +1018,7 @@ async def state_demand_forecast(
 
 
 @router.post("/policy-impact")
-async def simulate_policy_impact(
+def simulate_policy_impact(
     payload: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
@@ -1055,7 +1055,7 @@ async def simulate_policy_impact(
 
 
 @router.get("/training-gaps")
-async def get_training_gaps(
+def get_training_gaps(
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -1092,7 +1092,7 @@ async def get_training_gaps(
 
 
 @router.get("/demand-forecast")
-async def get_state_demand_forecast(
+def get_state_demand_forecast(
     days: int = 30,
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
@@ -1131,7 +1131,7 @@ async def get_state_demand_forecast(
 
 
 @router.post("/policy-impact")
-async def simulate_policy_impact(
+def simulate_policy_impact(
     payload: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
@@ -1168,7 +1168,7 @@ async def simulate_policy_impact(
 
 
 @router.get("/training-gaps")
-async def get_training_gaps(
+def get_training_gaps(
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -1206,7 +1206,7 @@ async def get_training_gaps(
 
 
 @router.get("/sla-policies")
-async def list_state_sla_policies(
+def list_state_sla_policies(
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -1236,7 +1236,7 @@ async def list_state_sla_policies(
 
 
 @router.post("/sla-policies")
-async def create_state_sla_policy(
+def create_state_sla_policy(
     policy_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
@@ -1281,7 +1281,7 @@ async def create_state_sla_policy(
 
 
 @router.put("/sla-policies/{policy_id}")
-async def update_state_sla_policy(
+def update_state_sla_policy(
     policy_id: int,
     policy_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
@@ -1326,7 +1326,7 @@ async def update_state_sla_policy(
 
 
 @router.delete("/sla-policies/{policy_id}")
-async def delete_state_sla_policy(
+def delete_state_sla_policy(
     policy_id: int,
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
@@ -1345,7 +1345,7 @@ async def delete_state_sla_policy(
 
 
 @router.get("/service-policies")
-async def list_state_service_policies(
+def list_state_service_policies(
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
 ):
@@ -1373,7 +1373,7 @@ async def list_state_service_policies(
 
 
 @router.post("/service-policies")
-async def create_state_service_policy(
+def create_state_service_policy(
     policy_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)
@@ -1405,7 +1405,7 @@ async def create_state_service_policy(
 
 
 @router.put("/service-policies/{policy_id}")
-async def update_state_service_policy(
+def update_state_service_policy(
     policy_id: int,
     policy_data: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
@@ -1441,7 +1441,7 @@ async def update_state_service_policy(
 
 
 @router.delete("/service-policies/{policy_id}")
-async def delete_state_service_policy(
+def delete_state_service_policy(
     policy_id: int,
     current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
     db: Session = Depends(get_db)

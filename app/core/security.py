@@ -84,8 +84,8 @@ def decode_access_token(token: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-async def get_current_user_token(token: str = Depends(oauth2_scheme)) -> Dict[str, Any]:
-    """Get current user from token"""
+def get_current_user_token(token: str = Depends(oauth2_scheme)) -> Dict[str, Any]:
+    """Get current user from token (sync so callers using def routes run in thread pool)."""
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",

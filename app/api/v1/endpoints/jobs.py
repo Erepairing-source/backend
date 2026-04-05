@@ -17,7 +17,7 @@ router = APIRouter()
 
 
 @router.post("/reminders/run")
-async def run_reminders_job(
+def run_reminders_job(
     request: Request,
     db: Session = Depends(get_db),
     x_reminder_secret: Optional[str] = Header(default=None, alias="X-Reminder-Secret"),
@@ -64,7 +64,7 @@ async def run_reminders_job(
 
 
 @router.post("/reminders/run-as-admin")
-async def run_reminders_as_platform_admin(
+def run_reminders_as_platform_admin(
     db: Session = Depends(get_db),
     _: User = Depends(require_role([UserRole.PLATFORM_ADMIN])),
 ):

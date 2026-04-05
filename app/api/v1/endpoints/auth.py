@@ -68,7 +68,7 @@ class ResetPasswordWithOtpRequest(BaseModel):
 
 
 @router.post("/login", response_model=Token)
-async def login(
+def login(
     login_data: LoginRequest,
     db: Session = Depends(get_db)
 ):
@@ -180,7 +180,7 @@ async def login(
 
 
 @router.post("/token", response_model=Token)
-async def login_for_access_token(
+def login_for_access_token(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_db)
 ):
@@ -218,7 +218,7 @@ async def login_for_access_token(
 
 
 @router.get("/me")
-async def get_current_user(
+def get_current_user(
     token_data: dict = Depends(get_current_user_token),
     db: Session = Depends(get_db)
 ):
@@ -240,7 +240,7 @@ async def get_current_user(
 
 
 @router.get("/set-password-preview")
-async def set_password_preview(
+def set_password_preview(
     token: str = Query(..., description="Token from the set-password email link"),
     db: Session = Depends(get_db),
 ):
@@ -271,7 +271,7 @@ async def set_password_preview(
 
 
 @router.post("/set-password")
-async def set_password(
+def set_password(
     body: SetPasswordRequest,
     db: Session = Depends(get_db)
 ):
@@ -326,7 +326,7 @@ async def set_password(
 
 
 @router.post("/resend-set-password")
-async def resend_set_password(
+def resend_set_password(
     body: ResendSetPasswordRequest,
     db: Session = Depends(get_db)
 ):
@@ -351,7 +351,7 @@ async def resend_set_password(
 
 
 @router.post("/verify-email")
-async def verify_email_endpoint(
+def verify_email_endpoint(
     body: VerifyEmailRequest,
     db: Session = Depends(get_db),
 ):
@@ -363,7 +363,7 @@ async def verify_email_endpoint(
 
 
 @router.post("/resend-verification-otp")
-async def resend_verification_otp(
+def resend_verification_otp(
     body: ResendVerificationRequest,
     db: Session = Depends(get_db),
 ):
@@ -405,7 +405,7 @@ async def resend_verification_otp(
 
 
 @router.post("/forgot-password")
-async def forgot_password(
+def forgot_password(
     body: ForgotPasswordRequest,
     db: Session = Depends(get_db),
 ):
@@ -437,7 +437,7 @@ async def forgot_password(
 
 
 @router.post("/reset-password")
-async def reset_password_with_otp(
+def reset_password_with_otp(
     body: ResetPasswordWithOtpRequest,
     db: Session = Depends(get_db),
 ):

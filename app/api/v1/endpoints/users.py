@@ -7,6 +7,7 @@ import string
 from fastapi import APIRouter, Depends, HTTPException, status, Body, File, UploadFile, Form
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError
 from typing import List
 
 import pandas as pd
@@ -21,9 +22,86 @@ from app.core.email import send_credentials_email
 from app.core.email_verification import create_email_verification_otp
 from app.models.user import User, UserRole
 from app.models.location import Country, State, City
+from app.models.ticket import Ticket, TicketComment
+from app.models.notification import Notification
+from app.models.password_set_token import PasswordSetToken
+from app.models.email_verification_otp import EmailVerificationOTP
+from app.models.device import Device
+from app.models.ticket_start_approval import TicketStartApproval
+from app.models.escalation import Escalation
+from app.models.inventory import InventoryTransaction
+from app.models.warranty import WarrantyClaim
+from app.models.subscription import Vendor
+from app.models.ai_models import SentimentAnalysis, ChatSession
 from app.schemas.user import UserCreate, UserResponse, UserUpdate
 
 router = APIRouter()
+
+
+def _detach_user_references(db: Session, user_id: int, actor_id: int) -> None:
+    """Clear or reassign FKs so a user row can be deleted without integrity errors."""
+    db.query(Notification).filter(Notification.user_id == user_id).delete(synchronize_session=False)
+    db.query(PasswordSetToken).filter(PasswordSetToken.user_id == user_id).delete(synchronize_session=False)
+    db.query(EmailVerificationOTP).filter(EmailVerificationOTP.user_id == user_id).delete(
+        synchronize_session=False
+    )
+
+    for session in db.query(ChatSession).filter(ChatSession.user_id == user_id).all():
+        db.delete(session)
+
+    db.query(Ticket).filter(Ticket.customer_id == user_id).update(
+        {Ticket.customer_id: None}, synchronize_session=False
+    )
+    db.query(Ticket).filter(Ticket.assigned_engineer_id == user_id).update(
+        {Ticket.assigned_engineer_id: None}, synchronize_session=False
+    )
+    db.query(Ticket).filter(Ticket.assigned_by_id == user_id).update(
+        {Ticket.assigned_by_id: None}, synchronize_session=False
+    )
+    db.query(Ticket).filter(Ticket.created_by_id == user_id).update(
+        {Ticket.created_by_id: None}, synchronize_session=False
+    )
+
+    db.query(TicketComment).filter(TicketComment.user_id == user_id).update(
+        {TicketComment.user_id: None}, synchronize_session=False
+    )
+
+    db.query(TicketStartApproval).filter(TicketStartApproval.requested_by_id == user_id).update(
+        {TicketStartApproval.requested_by_id: actor_id}, synchronize_session=False
+    )
+    db.query(TicketStartApproval).filter(TicketStartApproval.approved_by_id == user_id).update(
+        {TicketStartApproval.approved_by_id: None}, synchronize_session=False
+    )
+
+    db.query(Escalation).filter(Escalation.escalated_by_id == user_id).update(
+        {Escalation.escalated_by_id: actor_id}, synchronize_session=False
+    )
+    db.query(Escalation).filter(Escalation.assigned_to_id == user_id).update(
+        {Escalation.assigned_to_id: None}, synchronize_session=False
+    )
+    db.query(Escalation).filter(Escalation.resolved_by_id == user_id).update(
+        {Escalation.resolved_by_id: None}, synchronize_session=False
+    )
+
+    db.query(InventoryTransaction).filter(InventoryTransaction.performed_by_id == user_id).update(
+        {InventoryTransaction.performed_by_id: None}, synchronize_session=False
+    )
+    db.query(InventoryTransaction).filter(InventoryTransaction.requested_by_id == user_id).update(
+        {InventoryTransaction.requested_by_id: None}, synchronize_session=False
+    )
+    db.query(InventoryTransaction).filter(InventoryTransaction.approved_by_id == user_id).update(
+        {InventoryTransaction.approved_by_id: None}, synchronize_session=False
+    )
+
+    db.query(WarrantyClaim).filter(WarrantyClaim.approved_by_id == user_id).update(
+        {WarrantyClaim.approved_by_id: None}, synchronize_session=False
+    )
+
+    db.query(Vendor).filter(Vendor.user_id == user_id).update({Vendor.user_id: None}, synchronize_session=False)
+
+    db.query(SentimentAnalysis).filter(SentimentAnalysis.engineer_id == user_id).update(
+        {SentimentAnalysis.engineer_id: None}, synchronize_session=False
+    )
 
 
 def _role_value(role) -> str:
@@ -42,7 +120,7 @@ def _generate_password(length: int = 10) -> str:
 
 
 @router.get("/available-roles")
-async def get_available_roles(
+def get_available_roles(
     current_user: User = Depends(require_role([
         UserRole.ORGANIZATION_ADMIN,
         UserRole.PLATFORM_ADMIN
@@ -66,7 +144,7 @@ async def get_available_roles(
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
-async def create_user(
+def create_user(
     user_data: UserCreate,
     current_user: User = Depends(require_role([
         UserRole.ORGANIZATION_ADMIN,
@@ -236,7 +314,7 @@ async def create_user(
 
 
 @router.get("/me", response_model=UserResponse)
-async def get_my_profile(
+def get_my_profile(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
@@ -245,7 +323,7 @@ async def get_my_profile(
 
 
 @router.put("/me/location")
-async def update_my_location(
+def update_my_location(
     payload: dict = Body(...),
     current_user: User = Depends(require_role([UserRole.SUPPORT_ENGINEER])),
     db: Session = Depends(get_db)
@@ -260,7 +338,7 @@ async def update_my_location(
 
 
 @router.get("/", response_model=List[UserResponse])
-async def list_users(
+def list_users(
     role: UserRole = None,
     organization_id: int = None,
     current_user: User = Depends(require_role([
@@ -378,7 +456,7 @@ async def bulk_create_customers(
 
 
 @router.get("/bulk-customers-template")
-async def bulk_customers_template(
+def bulk_customers_template(
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
 ):
     """Download Excel template for bulk customer upload. Columns: full_name, email, phone."""
@@ -395,7 +473,7 @@ async def bulk_customers_template(
 
 
 @router.get("/{user_id}", response_model=UserResponse)
-async def get_user(
+def get_user(
     user_id: int,
     current_user: User = Depends(require_role([
         UserRole.ORGANIZATION_ADMIN,
@@ -421,7 +499,7 @@ async def get_user(
 
 
 @router.put("/{user_id}", response_model=UserResponse)
-async def update_user(
+def update_user(
     user_id: int,
     user_data: UserUpdate,
     current_user: User = Depends(require_role([
@@ -556,8 +634,64 @@ async def update_user(
     return user
 
 
+@router.delete("/{user_id}", status_code=status.HTTP_200_OK)
+def delete_user(
+    user_id: int,
+    current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN, UserRole.PLATFORM_ADMIN])),
+    db: Session = Depends(get_db),
+):
+    """
+    Permanently delete a user. Organization admins may only delete users in their organization
+    (not themselves and not other organization admins). Customers with registered devices must
+    remove/reassign devices first.
+    """
+    if user_id == current_user.id:
+        raise HTTPException(status_code=400, detail="You cannot delete your own account")
+
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if current_user.role == UserRole.ORGANIZATION_ADMIN:
+        if target.organization_id != current_user.organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only delete users in your organization",
+            )
+        if target.role == UserRole.ORGANIZATION_ADMIN:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You cannot delete another organization administrator",
+            )
+    elif current_user.role == UserRole.PLATFORM_ADMIN:
+        if target.role == UserRole.PLATFORM_ADMIN:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You cannot delete another platform administrator",
+            )
+
+    if db.query(Device).filter(Device.customer_id == user_id).first():
+        raise HTTPException(
+            status_code=400,
+            detail="This user still has registered devices. Remove or reassign devices before deleting the user.",
+        )
+
+    try:
+        _detach_user_references(db, user_id, actor_id=current_user.id)
+        db.delete(target)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="User could not be deleted because related records still reference this account.",
+        )
+
+    return {"message": "User deleted", "id": user_id}
+
+
 @router.get("/engineers", response_model=List[UserResponse])
-async def list_engineers(
+def list_engineers(
     city_id: int = None,
     is_available: bool = None,
     current_user: User = Depends(get_current_user),
