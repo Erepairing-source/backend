@@ -2,6 +2,7 @@
 Email sending service (SMTP).
 All HTML bodies use the branded layout (see email_templates) aligned with the website UI.
 """
+import logging
 from urllib.parse import quote
 import smtplib
 from email.utils import formataddr, make_msgid, formatdate
@@ -9,7 +10,9 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from typing import Optional
 
-from app.core.config import settings
+from app.core.config import settings, frontend_base_url
+logger = logging.getLogger(__name__)
+
 from app.core.email_templates import (
     block_callout,
     block_heading,
@@ -37,7 +40,10 @@ def send_email(
     Returns True on success, False if SMTP is not configured or send fails.
     """
     if not settings.SMTP_HOST or not settings.SMTP_USER or not settings.SMTP_PASSWORD:
-        print("[Email] SMTP not configured (SMTP_HOST/USER/PASSWORD). Skipping send.")
+        logger.warning(
+            "SMTP not configured (set SMTP_HOST, SMTP_USER, SMTP_PASSWORD). Email to %s not sent.",
+            to_email,
+        )
         return False
 
     msg = MIMEMultipart("alternative")
@@ -65,9 +71,10 @@ def send_email(
                     server.starttls()
                 server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
                 server.sendmail(settings.SMTP_FROM_EMAIL, [to_email], msg.as_string())
+        logger.info("SMTP sent ok subject=%r to=%s", subject, to_email)
         return True
     except Exception as e:
-        print(f"[Email] Send failed: {e}")
+        logger.exception("SMTP send failed to %s: %s", to_email, e)
         return False
 
 
@@ -78,6 +85,10 @@ def send_credentials_email(
     login_url: Optional[str] = None,
     email_verification_otp: Optional[str] = None,
     verify_email_url: Optional[str] = None,
+    *,
+    email_subject: Optional[str] = None,
+    body_intro: Optional[str] = None,
+    subtitle: Optional[str] = None,
 ) -> bool:
     """
     Send login credentials (email + password) to the user.
@@ -85,8 +96,8 @@ def send_credentials_email(
     Optionally includes a 6-digit email verification OTP and link to the verify-email page.
     """
     name = full_name or "there"
-    login = login_url or (getattr(settings, "FRONTEND_URL", "http://localhost:3000").rstrip("/") + "/login")
-    base = getattr(settings, "FRONTEND_URL", "http://localhost:3000").rstrip("/")
+    base = frontend_base_url()
+    login = login_url or f"{base}/login"
     verify_link = verify_email_url or f"{base}/verify-email?email={quote(to_email, safe='')}"
     otp_txt = ""
     if email_verification_otp:
@@ -94,10 +105,12 @@ def send_credentials_email(
             f"\nEmail verification code (expires in 15 minutes):\n  {email_verification_otp}\n\n"
             f"Verify your email: {verify_link}\n\n"
         )
-    subject = "Your eRepairing customer account"
+    subject = email_subject or "Your eRepairing customer account"
+    intro = body_intro or "Your customer account has been created."
+    sub = subtitle or "Your customer account is ready. Use the details below to sign in."
     body_text = (
         f"Hi {name},\n\n"
-        "Your customer account has been created.\n\n"
+        f"{intro}\n\n"
         f"Email: {to_email}\n"
         f"Password: {password}\n\n"
         f"{otp_txt}"
@@ -107,7 +120,7 @@ def send_credentials_email(
     )
     inner = (
         block_heading(f"Hi {name},")
-        + block_subtitle("Your customer account is ready. Use the details below to sign in.")
+        + block_subtitle(sub)
         + block_info_table(
             [
                 ("Email", to_email),
@@ -354,6 +367,40 @@ def send_email_verification_otp(
     body_html = wrap_branded_html(
         title=subject,
         preheader="Your verification code inside",
+        inner_html=inner,
+    )
+    return send_email(to_email, subject, body_html, body_text)
+
+
+def send_password_reset_otp(
+    to_email: str,
+    otp_code: str,
+    full_name: Optional[str] = None,
+) -> bool:
+    """Send 6-digit code after forgot-password request."""
+    name = full_name or "there"
+    subject = "Reset your eRepairing password"
+    body_text = (
+        f"Hi {name},\n\n"
+        "We received a request to reset your eRepairing password. Use this code:\n\n"
+        f"  {otp_code}\n\n"
+        "Enter it on the reset page with your new password. The code expires in 15 minutes.\n\n"
+        "If you did not request this, ignore this email — your password will stay the same.\n\n"
+        "— eRepairing"
+    )
+    inner = (
+        block_heading(f"Hi {name},")
+        + block_subtitle("Use this code to choose a new password for your account.")
+        + block_otp(otp_code)
+        + block_paragraph("Enter the code on the forgot-password page, then set your new password. Expires in 15 minutes.")
+        + block_callout(
+            "If you didn't ask to reset your password, you can ignore this email.",
+            variant="info",
+        )
+    )
+    body_html = wrap_branded_html(
+        title=subject,
+        preheader="Your password reset code",
         inner_html=inner,
     )
     return send_email(to_email, subject, body_html, body_text)

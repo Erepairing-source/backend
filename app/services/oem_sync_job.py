@@ -12,7 +12,8 @@ from app.models.warranty import Warranty, WarrantyStatus
 from app.services.oem_warranty import OEMWarrantyService
 
 
-async def run_sync_cycle():
+def run_sync_cycle_blocking():
+    """Runs OEM warranty sync using sync DB + HTTP (safe for asyncio.to_thread)."""
     service = OEMWarrantyService()
     db = SessionLocal()
     try:
@@ -41,7 +42,7 @@ async def run_sync_cycle():
             failed = 0
             for device in devices:
                 try:
-                    result = await service.fetch_warranty(integration, device.serial_number)
+                    result = service.fetch_warranty_sync(integration, device.serial_number)
                     if result.get("error"):
                         failed += 1
                         continue
@@ -88,9 +89,10 @@ async def run_sync_cycle():
 
 
 async def start_oem_sync_loop():
+    """Run sync in a worker thread so sync SQLAlchemy + HTTP never block API requests."""
     while True:
         try:
-            await run_sync_cycle()
+            await asyncio.to_thread(run_sync_cycle_blocking)
         except Exception:
             pass
         await asyncio.sleep(max(5, settings.OEM_WARRANTY_SYNC_INTERVAL_MINUTES) * 60)

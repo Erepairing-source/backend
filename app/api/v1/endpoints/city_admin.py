@@ -494,55 +494,90 @@ async def get_pending_parts_approval(
     
     pending_tickets = []
     for ticket in tickets:
-        parts_request_comment = db.query(TicketComment).filter(
-            TicketComment.ticket_id == ticket.id,
-            TicketComment.comment_type == "parts_request"
-        ).order_by(TicketComment.created_at.desc()).first()
-
-        if (ticket.parts_used and len(ticket.parts_used) > 0) or parts_request_comment:
-            # Check if parts are already approved (we'll use a comment to track this)
-            approval_comment = db.query(TicketComment).filter(
+        approval_comment = (
+            db.query(TicketComment)
+            .filter(
                 TicketComment.ticket_id == ticket.id,
-                TicketComment.comment_type == "parts_approval"
-            ).first()
-            
-            if not approval_comment:
-                # Get part details from database
-                parts_details = []
-                requested_parts = ticket.parts_used or []
-                if parts_request_comment:
-                    requested_parts = (parts_request_comment.extra_data or {}).get("parts", requested_parts)
-                for part_usage in requested_parts:
-                    part_id = part_usage.get('part_id')
-                    quantity = part_usage.get('quantity', 1)
-                    if part_id:
-                        part = db.query(Part).filter(Part.id == part_id).first()
-                        if part:
-                            # Get inventory for this part in the city
-                            inventory = db.query(Inventory).filter(
-                                Inventory.part_id == part_id,
-                                Inventory.city_id == current_user.city_id,
-                                Inventory.organization_id == current_user.organization_id
-                            ).first()
-                            
-                            parts_details.append({
-                                "part_id": part_id,
-                                "part_name": part.name,
-                                "sku": part.sku,
-                                "quantity": quantity,
-                                "available_stock": inventory.current_stock if inventory else 0
-                            })
-                
-                pending_tickets.append({
-                    "ticket_id": ticket.id,
-                    "ticket_number": ticket.ticket_number,
-                    "engineer_id": ticket.assigned_engineer_id,
-                    "engineer_name": ticket.assigned_engineer.full_name if ticket.assigned_engineer else "Unknown",
-                    "resolved_at": ticket.resolved_at.isoformat() if ticket.resolved_at else None,
-                    "request_type": "pre_approval" if parts_request_comment else "post_resolution",
-                    "parts": parts_details
-                })
-    
+                TicketComment.comment_type == "parts_approval",
+            )
+            .first()
+        )
+        if approval_comment:
+            continue
+
+        parts_request_comment = (
+            db.query(TicketComment)
+            .filter(
+                TicketComment.ticket_id == ticket.id,
+                TicketComment.comment_type == "parts_request",
+            )
+            .order_by(TicketComment.created_at.desc())
+            .first()
+        )
+
+        request_authorized = False
+        if parts_request_comment:
+            request_authorized = bool(
+                db.query(TicketComment)
+                .filter(
+                    TicketComment.ticket_id == ticket.id,
+                    TicketComment.comment_type == "parts_request_approved",
+                    TicketComment.created_at > parts_request_comment.created_at,
+                )
+                .first()
+            )
+
+        post_resolution = bool(ticket.parts_used and len(ticket.parts_used) > 0)
+        pre_request = bool(parts_request_comment and not request_authorized)
+
+        if post_resolution:
+            request_type = "post_resolution"
+            requested_parts = list(ticket.parts_used)
+        elif pre_request:
+            request_type = "pre_approval"
+            requested_parts = (parts_request_comment.extra_data or {}).get("parts", []) or []
+        else:
+            continue
+
+        if not requested_parts:
+            continue
+
+        parts_details = []
+        for part_usage in requested_parts:
+            part_id = part_usage.get("part_id")
+            quantity = part_usage.get("quantity", 1)
+            if part_id:
+                part = db.query(Part).filter(Part.id == part_id).first()
+                if part:
+                    inventory = db.query(Inventory).filter(
+                        Inventory.part_id == part_id,
+                        Inventory.city_id == current_user.city_id,
+                        Inventory.organization_id == current_user.organization_id,
+                    ).first()
+
+                    parts_details.append(
+                        {
+                            "part_id": part_id,
+                            "part_name": part.name,
+                            "sku": part.sku,
+                            "quantity": quantity,
+                            "available_stock": inventory.current_stock if inventory else 0,
+                        }
+                    )
+
+        pending_tickets.append(
+            {
+                "ticket_id": ticket.id,
+                "ticket_number": ticket.ticket_number,
+                "ticket_status": ticket.status.value if ticket.status else None,
+                "engineer_id": ticket.assigned_engineer_id,
+                "engineer_name": ticket.assigned_engineer.full_name if ticket.assigned_engineer else "Unknown",
+                "resolved_at": ticket.resolved_at.isoformat() if ticket.resolved_at else None,
+                "request_type": request_type,
+                "parts": parts_details,
+            }
+        )
+
     return pending_tickets
 
 
@@ -658,6 +693,74 @@ async def approve_parts_usage(
         "message": "Parts approval processed",
         "approved": approved_parts,
         "rejected": rejected_parts
+    }
+
+
+@router.post("/tickets/{ticket_id}/approve-parts-request")
+async def approve_parts_request(
+    ticket_id: int,
+    current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
+    db: Session = Depends(get_db),
+):
+    """
+    Authorize an engineer's **pre-job** parts request (POST /tickets/.../parts/request).
+    Does not deduct inventory — that happens on POST .../approve-parts after the ticket is
+    resolved with parts_used.
+    """
+    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if ticket.city_id != current_user.city_id:
+        raise HTTPException(status_code=403, detail="Ticket not in your city")
+
+    req = (
+        db.query(TicketComment)
+        .filter(
+            TicketComment.ticket_id == ticket.id,
+            TicketComment.comment_type == "parts_request",
+        )
+        .order_by(TicketComment.created_at.desc())
+        .first()
+    )
+    if not req:
+        raise HTTPException(
+            status_code=400,
+            detail="No engineer parts request on this ticket. Use “Review & approve stock” after the ticket is resolved.",
+        )
+
+    already = (
+        db.query(TicketComment)
+        .filter(
+            TicketComment.ticket_id == ticket.id,
+            TicketComment.comment_type == "parts_request_approved",
+            TicketComment.created_at > req.created_at,
+        )
+        .first()
+    )
+    if already:
+        raise HTTPException(status_code=400, detail="This parts request was already authorized")
+
+    db.add(
+        TicketComment(
+            ticket_id=ticket.id,
+            user_id=current_user.id,
+            comment_text=(
+                "City admin authorized the engineer's parts request. "
+                "Stock is deducted after the job is completed and final parts usage is approved."
+            ),
+            comment_type="parts_request_approved",
+            extra_data={"approved_by": current_user.id},
+        )
+    )
+    if ticket.status == TicketStatus.WAITING_PARTS:
+        ticket.status = TicketStatus.IN_PROGRESS
+
+    db.commit()
+    return {
+        "message": (
+            "Parts request authorized. The engineer can continue; "
+            "city inventory is reduced only after resolution and “Approve parts usage”."
+        )
     }
 
 

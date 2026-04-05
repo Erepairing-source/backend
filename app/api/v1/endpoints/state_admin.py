@@ -31,7 +31,7 @@ def _india_cities_for_state(state_name: str) -> List[str]:
 from app.models.device import Device
 from app.models.inventory import Inventory, InventoryTransaction, Part
 from app.models.notification import Notification, NotificationType, NotificationChannel, NotificationStatus
-from app.models.sla_policy import SLAPolicy, ServicePolicy, SLAType
+from app.models.sla_policy import SLAPolicy, ServicePolicy, coerce_sla_type, sla_type_to_api
 from app.services.ai.demand_forecasting import DemandForecastingService
 
 router = APIRouter()
@@ -1222,7 +1222,7 @@ async def list_state_sla_policies(
     return [
         {
             "id": p.id,
-            "sla_type": p.sla_type.value,
+            "sla_type": sla_type_to_api(p.sla_type),
             "target_hours": p.target_hours,
             "product_category": p.product_category,
             "product_id": p.product_id,
@@ -1245,10 +1245,15 @@ async def create_state_sla_policy(
     if not current_user.organization_id or not current_user.state_id:
         raise HTTPException(status_code=400, detail="User must be associated with an organization and state")
 
-    sla_type = policy_data.get("sla_type")
+    sla_type_raw = policy_data.get("sla_type")
     target_hours = policy_data.get("target_hours")
-    if not sla_type or not target_hours:
+    if not sla_type_raw or not target_hours:
         raise HTTPException(status_code=400, detail="Missing required fields: sla_type, target_hours")
+
+    try:
+        sla_type = coerce_sla_type(sla_type_raw)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     city_id = policy_data.get("city_id")
     if city_id:
@@ -1258,7 +1263,7 @@ async def create_state_sla_policy(
 
     policy = SLAPolicy(
         organization_id=current_user.organization_id,
-        sla_type=SLAType(sla_type),
+        sla_type=sla_type,
         target_hours=target_hours,
         product_category=policy_data.get("product_category"),
         product_id=policy_data.get("product_id"),
@@ -1292,7 +1297,10 @@ async def update_state_sla_policy(
         raise HTTPException(status_code=404, detail="SLA policy not found")
 
     if "sla_type" in policy_data:
-        policy.sla_type = SLAType(policy_data["sla_type"])
+        try:
+            policy.sla_type = coerce_sla_type(policy_data["sla_type"])
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
     if "target_hours" in policy_data:
         policy.target_hours = policy_data["target_hours"]
     if "product_category" in policy_data:

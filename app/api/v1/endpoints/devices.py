@@ -11,6 +11,7 @@ import os
 import uuid
 
 from app.core.database import get_db
+from app.core.location_scope import device_query_for_user, get_device_if_accessible
 from app.core.permissions import get_current_user
 from app.models.user import User
 from app.models.device import Device, DeviceRegistration
@@ -309,8 +310,8 @@ async def list_devices(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """List all devices for the current user"""
-    devices = db.query(Device).filter(Device.customer_id == current_user.id).all()
+    """List devices visible to the current user (role-scoped)."""
+    devices = device_query_for_user(db, current_user).all()
     
     result = []
     for device in devices:
@@ -355,11 +356,8 @@ async def get_device(
     db: Session = Depends(get_db)
 ):
     """Get device details"""
-    device = db.query(Device).filter(
-        Device.id == device_id,
-        Device.customer_id == current_user.id
-    ).first()
-    
+    device = get_device_if_accessible(db, device_id, current_user)
+
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
     

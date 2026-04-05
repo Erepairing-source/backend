@@ -1,7 +1,7 @@
 """
 SLA and Service Policy models
 """
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Enum, Text, Integer as IntCol, JSON
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, Integer as IntCol, JSON, TypeDecorator
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import enum
@@ -10,11 +10,78 @@ from app.core.database import Base
 
 
 class SLAType(str, enum.Enum):
-    """SLA type"""
-    FIRST_RESPONSE = "first_response"  # Time to first response
-    ASSIGNMENT = "assignment"  # Time to assign engineer
-    RESOLUTION = "resolution"  # Time to resolve
-    ON_SITE = "on_site"  # Time to reach customer location
+    """SLA type.
+
+    String values match MySQL native ENUM labels used in production (uppercase).
+    API and frontend use lowercase slugs via coerce_sla_type / sla_type_to_api.
+    """
+
+    FIRST_RESPONSE = "FIRST_RESPONSE"
+    ASSIGNMENT = "ASSIGNMENT"
+    RESOLUTION = "RESOLUTION"
+    ON_SITE = "ON_SITE"
+
+
+_SLA_SLUG_TO_ENUM = {
+    "first_response": SLAType.FIRST_RESPONSE,
+    "assignment": SLAType.ASSIGNMENT,
+    "resolution": SLAType.RESOLUTION,
+    "on_site": SLAType.ON_SITE,
+}
+
+
+def coerce_sla_type(raw):
+    """Parse API/body value into SLAType (accepts lowercase slugs or ENUM labels)."""
+    if raw is None:
+        raise ValueError("sla_type is required")
+    if isinstance(raw, SLAType):
+        return raw
+    s = str(raw).strip()
+    key = s.lower().replace("-", "_")
+    if key in _SLA_SLUG_TO_ENUM:
+        return _SLA_SLUG_TO_ENUM[key]
+    if s in SLAType.__members__:
+        return SLAType[s]
+    su = s.upper()
+    if su in SLAType.__members__:
+        return SLAType[su]
+    for member in SLAType:
+        if member.value == s:
+            return member
+    raise ValueError(f"Invalid sla_type: {raw!r}")
+
+
+def sla_type_to_api(member: SLAType) -> str:
+    """Stable lowercase slug for JSON (matches frontend Select values)."""
+    return member.name.lower()
+
+
+class CoercedSLAType(TypeDecorator):
+    """
+    MySQL native ENUM `slatype` stores FIRST_RESPONSE, ASSIGNMENT, …
+
+    API sends lowercase slugs (resolution, first_response). SQLAlchemy's Enum
+    bind passes lowercase strings through unchanged, which MySQL rejects.
+    We always coerce and bind the canonical **string value** (e.g. RESOLUTION).
+
+    impl is String so we never double-process through Enum(); the DB column
+    stays MySQL ENUM from migrations — only the bound parameter must match.
+    """
+
+    impl = String(32)
+    cache_ok = True
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        return coerce_sla_type(value).value
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if isinstance(value, SLAType):
+            return value
+        return coerce_sla_type(value)
 
 
 class SLAPolicy(Base):
@@ -32,7 +99,7 @@ class SLAPolicy(Base):
     city_id = Column(Integer, ForeignKey("cities.id"), nullable=True)
     
     # SLA Rules
-    sla_type = Column(Enum(SLAType), nullable=False)
+    sla_type = Column(CoercedSLAType(), nullable=False)
     target_hours = Column(IntCol, nullable=False)  # Target time in hours
     
     # Priority-based overrides

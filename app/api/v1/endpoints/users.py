@@ -12,17 +12,27 @@ from typing import List
 import pandas as pd
 
 from app.core.database import get_db
-from app.core.config import settings
+from app.core.location_scope import apply_user_query_scope
+from app.core.location_resolution import materialize_user_location_ids
 from app.core.permissions import get_current_user, require_role
 from app.core.security import get_password_hash, get_pending_password_hash
 from app.core.password_set_email import create_and_send_set_password_token
-from app.core.email import send_credentials_email, send_email_verification_otp
+from app.core.email import send_credentials_email
 from app.core.email_verification import create_email_verification_otp
 from app.models.user import User, UserRole
 from app.models.location import Country, State, City
 from app.schemas.user import UserCreate, UserResponse, UserUpdate
 
 router = APIRouter()
+
+
+def _role_value(role) -> str:
+    """Normalize role for comparisons (avoids MySQL/SQLAlchemy enum mismatches skipping filters)."""
+    if role is None:
+        return ""
+    if isinstance(role, UserRole):
+        return role.value
+    return str(role)
 
 
 def _generate_password(length: int = 10) -> str:
@@ -138,20 +148,43 @@ async def create_user(
             return country.id, None, None
         return None, None, None
 
+    mc, ms, mct = materialize_user_location_ids(
+        db,
+        country_id=user_data.country_id,
+        country_code=user_data.country_code,
+        state_id=user_data.state_id,
+        state_name=user_data.state_name,
+        state_code=user_data.state_code,
+        city_id=user_data.city_id,
+        city_name=user_data.city_name,
+    )
+    eff_country = mc or user_data.country_id or current_user.country_id
+    eff_state = ms or user_data.state_id or current_user.state_id
+    eff_city = mct or user_data.city_id or current_user.city_id
+
     required_city_roles = [UserRole.CITY_ADMIN, UserRole.SUPPORT_ENGINEER]
     required_state_roles = [UserRole.STATE_ADMIN]
     required_country_roles = [UserRole.COUNTRY_ADMIN]
-    if user_data.role in required_city_roles and not user_data.city_id:
-        raise HTTPException(status_code=400, detail="city_id is required for this role")
-    if user_data.role in required_state_roles and not user_data.state_id:
-        raise HTTPException(status_code=400, detail="state_id is required for this role")
-    if user_data.role in required_country_roles and not user_data.country_id:
-        raise HTTPException(status_code=400, detail="country_id is required for this role")
+    if user_data.role in required_city_roles and not eff_city:
+        raise HTTPException(
+            status_code=400,
+            detail="City is required for this role. Select a city or send city_name with state and country.",
+        )
+    if user_data.role in required_state_roles and not eff_state:
+        raise HTTPException(
+            status_code=400,
+            detail="State is required for this role. Select a state or send state_name/state_code with country.",
+        )
+    if user_data.role in required_country_roles and not eff_country:
+        raise HTTPException(
+            status_code=400,
+            detail="Country is required for this role. Select a country or send country_code (e.g. IN).",
+        )
 
     normalized_country_id, normalized_state_id, normalized_city_id = normalize_location(
-        user_data.country_id or current_user.country_id,
-        user_data.state_id or current_user.state_id,
-        user_data.city_id or current_user.city_id
+        eff_country,
+        eff_state,
+        eff_city,
     )
 
     # Password: if provided use it; otherwise placeholder and send set-password email (for any role)
@@ -184,11 +217,14 @@ async def create_user(
         create_and_send_set_password_token(db, user)
     else:
         otp_code = create_email_verification_otp(db, user.id, ttl_minutes=15)
-        send_email_verification_otp(
+        send_credentials_email(
             user.email,
-            otp_code,
             user.full_name,
-            context="new user account",
+            str(user_data.password).strip(),
+            email_verification_otp=otp_code,
+            email_subject="Your eRepairing account — sign in details",
+            body_intro="An administrator created your eRepairing account. Use the email and password below to sign in.",
+            subtitle="Your account is ready. Sign in with the details below, then verify your email with the code.",
         )
     db.commit()
     db.refresh(user)
@@ -237,19 +273,8 @@ async def list_users(
     db: Session = Depends(get_db)
 ):
     """List users based on permissions and hierarchy (org → country → state → city)."""
-    query = db.query(User)
-    
-    # Hierarchy-based filtering: city sees city; state sees state; country sees country; org sees org; platform sees all
-    if current_user.role == UserRole.CITY_ADMIN:
-        query = query.filter(User.city_id == current_user.city_id)
-    elif current_user.role == UserRole.STATE_ADMIN:
-        query = query.filter(User.state_id == current_user.state_id)
-    elif current_user.role == UserRole.COUNTRY_ADMIN:
-        query = query.filter(User.country_id == current_user.country_id)
-    elif current_user.role == UserRole.ORGANIZATION_ADMIN:
-        query = query.filter(User.organization_id == current_user.organization_id)
-    # Platform admin: no filter (sees all)
-    
+    query = apply_user_query_scope(db.query(User), current_user)
+
     if role:
         query = query.filter(User.role == role)
     if organization_id:
@@ -339,7 +364,6 @@ async def bulk_create_customers(
                 email,
                 full_name,
                 password,
-                login_url,
                 email_verification_otp=otp_code,
             )
         created += 1
@@ -453,7 +477,16 @@ async def update_user(
         user.role = user_data.role
     if user_data.is_active is not None:
         user.is_active = user_data.is_active
-    if user_data.country_id is not None or user_data.state_id is not None or user_data.city_id is not None:
+    loc_keys = (
+        "country_id",
+        "country_code",
+        "state_id",
+        "state_name",
+        "state_code",
+        "city_id",
+        "city_name",
+    )
+    if any(getattr(user_data, k, None) is not None for k in loc_keys):
         def normalize_location(country_id, state_id, city_id):
             if city_id:
                 city = db.query(City).filter(City.id == city_id).first()
@@ -484,10 +517,34 @@ async def update_user(
                 return country.id, None, None
             return None, None, None
 
+        base_c = user.country_id
+        base_s = user.state_id
+        base_city = user.city_id
+        if user_data.country_id is not None:
+            base_c = user_data.country_id
+        if user_data.state_id is not None:
+            base_s = user_data.state_id
+        if user_data.city_id is not None:
+            base_city = user_data.city_id
+
+        mc, ms, mct = materialize_user_location_ids(
+            db,
+            country_id=base_c,
+            country_code=user_data.country_code,
+            state_id=base_s,
+            state_name=user_data.state_name,
+            state_code=user_data.state_code,
+            city_id=base_city,
+            city_name=user_data.city_name,
+        )
+        eff_c = mc or base_c
+        eff_s = ms or base_s
+        eff_city = mct or base_city
+
         normalized_country_id, normalized_state_id, normalized_city_id = normalize_location(
-            user_data.country_id if user_data.country_id is not None else user.country_id,
-            user_data.state_id if user_data.state_id is not None else user.state_id,
-            user_data.city_id if user_data.city_id is not None else user.city_id
+            eff_c,
+            eff_s,
+            eff_city,
         )
         user.country_id = normalized_country_id
         user.state_id = normalized_state_id

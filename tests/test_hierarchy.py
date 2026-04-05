@@ -305,6 +305,63 @@ def test_org_admin_sees_all_org_users(client, hierarchy_data):
 
 
 @pytest.mark.api
+def test_org_admin_cannot_list_users_from_other_organization(client, hierarchy_data, test_db, plan_in_db):
+    """Org isolation: GET /users as org admin must not return users from another organization (USER_MANUAL security)."""
+    country = hierarchy_data["country"]
+    states = hierarchy_data["states"]
+    cities = hierarchy_data["cities"]
+    pwd_hash = get_password_hash(TEST_PASSWORD)
+
+    org2 = Organization(
+        name="Isolated Other Org",
+        org_type=OrganizationType.SERVICE_COMPANY,
+        email="other-org-isolation@test.com",
+        phone="+919999888877",
+        country_id=country.id,
+        state_id=states[0].id,
+        city_id=cities[0].id,
+        is_active=True,
+    )
+    test_db.add(org2)
+    test_db.flush()
+    start = datetime.now(timezone.utc)
+    sub2 = Subscription(
+        organization_id=org2.id,
+        plan_id=plan_in_db.id,
+        billing_period=BillingPeriod.MONTHLY,
+        current_price=499.0,
+        currency="INR",
+        status="active",
+        start_date=start,
+        end_date=start + timedelta(days=30),
+    )
+    test_db.add(sub2)
+    test_db.flush()
+    org2.subscription_id = sub2.id
+    other_customer = User(
+        email="leaktest-otherorg@hierarchy.example.com",
+        phone="+91000999001",
+        password_hash=pwd_hash,
+        full_name="Other Org Only",
+        role=UserRole.CUSTOMER,
+        organization_id=org2.id,
+        country_id=None,
+        state_id=None,
+        city_id=None,
+        is_active=True,
+        is_verified=True,
+    )
+    test_db.add(other_customer)
+    test_db.commit()
+
+    token = _login(client, hierarchy_data["users"]["org_admin"].email)
+    r = client.get("/api/v1/users/", headers=_headers(token))
+    assert r.status_code == 200
+    emails = [u["email"] for u in r.json()]
+    assert "leaktest-otherorg@hierarchy.example.com" not in emails
+
+
+@pytest.mark.api
 def test_country_admin_sees_all_states(client, hierarchy_data):
     """Country admin dashboard and states list see all states in the country."""
     token = _login(client, hierarchy_data["users"]["country_admin"].email)

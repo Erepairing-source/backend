@@ -10,7 +10,7 @@ from app.models.location import Country, State, City
 from app.models.platform_settings import PlatformSettings
 from app.models.product import Product, ProductModel, ProductCategory
 from app.models.product_part import ProductPart
-from app.models.sla_policy import SLAPolicy, ServicePolicy, SLAType
+from app.models.sla_policy import SLAPolicy, ServicePolicy, SLAType, coerce_sla_type, sla_type_to_api
 from app.models.escalation import Escalation, EscalationLevel, EscalationType, EscalationStatus
 from app.models.integration import Integration, IntegrationType, IntegrationStatus
 from app.models.notification import Notification, NotificationType, NotificationChannel, NotificationStatus
@@ -58,6 +58,8 @@ __all__ = [
     "SLAPolicy",
     "ServicePolicy",
     "SLAType",
+    "coerce_sla_type",
+    "sla_type_to_api",
     "Escalation",
     "EscalationLevel",
     "EscalationType",

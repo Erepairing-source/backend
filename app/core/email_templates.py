@@ -8,7 +8,7 @@ import html
 from typing import Optional
 from urllib.parse import urlparse
 
-from app.core.config import settings
+from app.core.config import frontend_base_url
 
 
 # Matches frontend: gradient-hero + primary (indigo/blue family)
@@ -54,7 +54,7 @@ def wrap_branded_html(
     """
     Full HTML document: header bar (eR + eRepairing.com), white card body, footer.
     """
-    base = (getattr(settings, "FRONTEND_URL", "http://localhost:3000") or "").rstrip("/")
+    base = frontend_base_url()
     footer_link = base or "https://erepairing.com"
     host = _host_label(footer_link)
 

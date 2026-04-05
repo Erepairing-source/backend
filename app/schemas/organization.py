@@ -29,5 +29,18 @@ class OrganizationResponse(OrganizationBase):
         from_attributes = True
 
 
+class OrganizationAdminSelfUpdate(BaseModel):
+    """Org admin may update their own organization's profile (not org_type / subscription / active flag)."""
+
+    name: str
+    email: str
+    phone: str
+    address: Optional[str] = None
+    country_id: Optional[int] = None
+    state_id: Optional[int] = None
+    city_id: Optional[int] = None
+    city_name: Optional[str] = None
+
+
 
 

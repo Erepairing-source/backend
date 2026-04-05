@@ -11,6 +11,12 @@ import string
 import uuid
 
 from app.core.database import get_db
+from app.core.location_scope import (
+    apply_ticket_query_scope,
+    device_query_for_user,
+    get_device_if_accessible,
+    get_ticket_if_accessible,
+)
 from app.core.config import settings
 from app.core.email import (
     send_otp_email,
@@ -26,6 +32,7 @@ from app.models.ticket_otp import TicketOTP
 from app.models.ticket_start_approval import TicketStartApproval
 from app.models.device import Device
 from app.models.inventory import Part
+from app.models.product import Product
 from app.models.escalation import Escalation, EscalationLevel, EscalationType
 from app.models.notification import Notification, NotificationType, NotificationChannel, NotificationStatus
 from app.services.ai.sentiment_analyzer import SentimentAnalyzerService
@@ -36,6 +43,26 @@ from app.models.sla_policy import SLAType
 
 router = APIRouter()
 triage_service = CaseTriageService()
+
+
+def _parse_ticket_device_id(raw) -> Optional[int]:
+    if raw is None:
+        return None
+    if isinstance(raw, str) and not raw.strip():
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_service_coord(v) -> Optional[str]:
+    if v is None:
+        return None
+    s = str(v).strip()
+    if not s:
+        return None
+    return s[:20]
 
 
 def _ticket_customer_portal_url(ticket_id: int) -> str:
@@ -173,6 +200,14 @@ def _save_upload_file(upload: UploadFile, subdir: str) -> str:
     return f"/uploads/{subdir}/{filename}"
 
 
+def _ticket_or_404(db: Session, ticket_id: int, current_user: User) -> Ticket:
+    """Load a ticket only if the current user may access it (same rules as GET /tickets/{id})."""
+    ticket = get_ticket_if_accessible(db, ticket_id, current_user)
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    return ticket
+
+
 @router.post("/", status_code=status.HTTP_201_CREATED)
 async def create_ticket(
     ticket_data: dict = Body(...),
@@ -195,16 +230,82 @@ async def create_ticket(
     if not issue_description:
         raise HTTPException(status_code=400, detail="Issue description is required")
 
-    # Get or create device
+    parsed_device_id = _parse_ticket_device_id(device_id)
+    serial_clean = (str(device_serial).strip() if device_serial is not None else "") or None
+
     device = None
-    if device_id:
-        device = db.query(Device).filter(Device.id == device_id).first()
-    elif device_serial:
-        device = db.query(Device).filter(Device.serial_number == device_serial).first()
-    
-    if not device and device_serial:
-        raise HTTPException(status_code=404, detail="Device not found. Please register device first.")
-    
+    if current_user.role == UserRole.CUSTOMER:
+        if parsed_device_id is not None:
+            device = (
+                db.query(Device)
+                .filter(
+                    Device.id == parsed_device_id,
+                    Device.customer_id == current_user.id,
+                )
+                .first()
+            )
+            if not device:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Device not found or not registered to your account.",
+                )
+        elif serial_clean:
+            device = (
+                db.query(Device)
+                .filter(
+                    Device.serial_number == serial_clean,
+                    Device.customer_id == current_user.id,
+                )
+                .first()
+            )
+            if not device:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Device not found. Register your device first or select it from your list.",
+                )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Please select a registered device for this service request.",
+            )
+    else:
+        if parsed_device_id is not None:
+            device = get_device_if_accessible(db, parsed_device_id, current_user)
+            if not device:
+                raise HTTPException(status_code=404, detail="Device not found")
+        elif serial_clean:
+            device = (
+                device_query_for_user(db, current_user)
+                .filter(Device.serial_number == serial_clean)
+                .first()
+            )
+            if not device:
+                raise HTTPException(
+                    status_code=404,
+                    detail="Device not found for this serial number in your scope.",
+                )
+
+    organization_id = current_user.organization_id
+    if device:
+        if device.organization_id:
+            organization_id = organization_id or device.organization_id
+        if not organization_id and device.product_id:
+            prod = db.query(Product).filter(Product.id == device.product_id).first()
+            if prod and prod.organization_id:
+                organization_id = prod.organization_id
+
+    if not organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "No organization could be determined for this ticket. "
+                "Ensure your account is linked to your manufacturer or service provider."
+            ),
+        )
+
+    service_latitude = _normalize_service_coord(service_latitude)
+    service_longitude = _normalize_service_coord(service_longitude)
+
     # Generate ticket number
     ticket_number = f"TKT-{datetime.utcnow().strftime('%Y%m%d')}-{db.query(Ticket).count() + 1:06d}"
     
@@ -218,11 +319,14 @@ async def create_ticket(
     
     # Create ticket
     try:
-        priority_enum = TicketPriority(priority) if isinstance(priority, str) else priority
+        if isinstance(priority, str):
+            priority_enum = TicketPriority(priority.strip().lower())
+        elif isinstance(priority, TicketPriority):
+            priority_enum = priority
+        else:
+            priority_enum = TicketPriority.MEDIUM
     except ValueError:
         priority_enum = TicketPriority.MEDIUM
-
-    organization_id = current_user.organization_id or (device.organization_id if device else None)
 
     ticket = Ticket(
         ticket_number=ticket_number,
@@ -241,7 +345,7 @@ async def create_ticket(
         service_address=service_address,
         service_latitude=service_latitude,
         service_longitude=service_longitude,
-        priority=priority_enum or TicketPriority(triage_result.get("suggested_priority", "medium")),
+        priority=priority_enum,
         issue_category=triage_result.get("suggested_category"),
         ai_triage_category=triage_result.get("suggested_category"),
         ai_triage_confidence=triage_result.get("confidence_score"),
@@ -325,28 +429,10 @@ async def list_tickets(
     db: Session = Depends(get_db)
 ):
     """List tickets based on user role and permissions"""
-    query = db.query(Ticket)
-    
-    # Role-based filtering
-    if current_user.role == UserRole.CUSTOMER:
-        query = query.filter(Ticket.customer_id == current_user.id)
-    elif current_user.role == UserRole.SUPPORT_ENGINEER:
-        if assigned_to_me:
-            query = query.filter(Ticket.assigned_engineer_id == current_user.id)
-        else:
-            query = query.filter(
-                (Ticket.city_id == current_user.city_id) |
-                (Ticket.assigned_engineer_id == current_user.id)
-            )
-    elif current_user.role == UserRole.CITY_ADMIN:
-        query = query.filter(Ticket.city_id == current_user.city_id)
-    elif current_user.role == UserRole.STATE_ADMIN:
-        query = query.filter(Ticket.state_id == current_user.state_id)
-    elif current_user.role == UserRole.COUNTRY_ADMIN:
-        query = query.filter(Ticket.country_id == current_user.country_id)
-    elif current_user.role == UserRole.ORGANIZATION_ADMIN:
-        query = query.filter(Ticket.organization_id == current_user.organization_id)
-    
+    query = apply_ticket_query_scope(
+        db.query(Ticket), current_user, db, assigned_to_me=assigned_to_me
+    )
+
     # Apply filters
     if status_filter:
         query = query.filter(Ticket.status == status_filter)
@@ -394,16 +480,8 @@ async def get_ticket(
     db: Session = Depends(get_db)
 ):
     """Get ticket details"""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
-    
-    # Check access
-    if current_user.role == UserRole.CUSTOMER:
-        if ticket.customer_id != current_user.id:
-            raise HTTPException(status_code=403, detail="Access denied")
-    
+    ticket = _ticket_or_404(db, ticket_id, current_user)
+
     # Get SLA breach prediction
     if ticket.sla_deadline:
         sla_prediction = await sla_service.predict_breach_risk(
@@ -521,11 +599,7 @@ async def get_ticket_tracking(
     db: Session = Depends(get_db)
 ):
     """Get assigned engineer live location for customer"""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
-    if current_user.role == UserRole.CUSTOMER and ticket.customer_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    ticket = _ticket_or_404(db, ticket_id, current_user)
     if not ticket.assigned_engineer:
         raise HTTPException(status_code=400, detail="Engineer not assigned")
 
@@ -543,11 +617,7 @@ async def get_ticket_estimate(
     db: Session = Depends(get_db)
 ):
     """Estimate cost based on suggested parts and warranty"""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
-    if current_user.role == UserRole.CUSTOMER and ticket.customer_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    ticket = _ticket_or_404(db, ticket_id, current_user)
 
     if ticket.warranty_status == "in_warranty" and not ticket.is_chargeable:
         return {"total_estimate": 0, "parts": [], "labour": 0, "note": "Covered under warranty"}
@@ -588,11 +658,8 @@ async def assign_ticket(
     db: Session = Depends(get_db)
 ):
     """Assign ticket to engineer"""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
-    
+    ticket = _ticket_or_404(db, ticket_id, current_user)
+
     if engineer_id:
         engineer = db.query(User).filter(
             User.id == engineer_id,
@@ -639,11 +706,8 @@ async def start_ticket(
     db: Session = Depends(get_db)
 ):
     """Engineer starts working on ticket"""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
-    
+    ticket = _ticket_or_404(db, ticket_id, current_user)
+
     if ticket.assigned_engineer_id != current_user.id:
         raise HTTPException(status_code=403, detail="Ticket not assigned to you")
     
@@ -721,9 +785,7 @@ async def request_start_otp(
     db: Session = Depends(get_db)
 ):
     """Engineer requests OTP to start service. OTP is sent to customer email; engineer enters it in verify-start-otp."""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket = _ticket_or_404(db, ticket_id, current_user)
     if ticket.assigned_engineer_id != current_user.id:
         raise HTTPException(status_code=403, detail="Ticket not assigned to you")
     if ticket.status != TicketStatus.ASSIGNED:
@@ -775,9 +837,7 @@ async def verify_start_otp(
     db: Session = Depends(get_db)
 ):
     """Engineer enters OTP received from customer to verify and start the ticket."""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket = _ticket_or_404(db, ticket_id, current_user)
     if ticket.assigned_engineer_id != current_user.id:
         raise HTTPException(status_code=403, detail="Ticket not assigned to you")
     if ticket.status != TicketStatus.ASSIGNED:
@@ -829,9 +889,7 @@ async def request_completion_otp(
     db: Session = Depends(get_db)
 ):
     """Engineer requests OTP for completion. OTP is sent to customer; engineer enters it when resolving."""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket = _ticket_or_404(db, ticket_id, current_user)
     if ticket.assigned_engineer_id != current_user.id:
         raise HTTPException(status_code=403, detail="Ticket not assigned to you")
     if ticket.status != TicketStatus.IN_PROGRESS and ticket.status != TicketStatus.WAITING_PARTS:
@@ -877,9 +935,7 @@ async def update_ticket_eta(
     db: Session = Depends(get_db)
 ):
     """Update engineer ETA and notify customer"""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket = _ticket_or_404(db, ticket_id, current_user)
     if ticket.assigned_engineer_id != current_user.id:
         raise HTTPException(status_code=403, detail="Ticket not assigned to you")
 
@@ -929,11 +985,8 @@ async def resolve_ticket(
     db: Session = Depends(get_db)
 ):
     """Resolve a ticket"""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
-    
+    ticket = _ticket_or_404(db, ticket_id, current_user)
+
     resolution_notes = resolution_data.get("resolution_notes") or ""
     if not resolution_notes.strip():
         raise HTTPException(status_code=400, detail="resolution_notes is required")
@@ -1016,9 +1069,7 @@ async def upload_resolution_photo(
     db: Session = Depends(get_db)
 ):
     """Upload resolution photo for a ticket"""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket = _ticket_or_404(db, ticket_id, current_user)
     if ticket.assigned_engineer_id != current_user.id:
         raise HTTPException(status_code=403, detail="Ticket not assigned to you")
 
@@ -1034,9 +1085,7 @@ async def mark_parts_ordered(
     db: Session = Depends(get_db)
 ):
     """Mark parts as ordered for a ticket"""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket = _ticket_or_404(db, ticket_id, current_user)
 
     part_refs = parts_data.get("parts") or []
     ticket.status = TicketStatus.WAITING_PARTS
@@ -1070,9 +1119,7 @@ async def upload_part_photo(
     db: Session = Depends(get_db)
 ):
     """Upload part photo for a ticket"""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket = _ticket_or_404(db, ticket_id, current_user)
     if ticket.assigned_engineer_id != current_user.id:
         raise HTTPException(status_code=403, detail="Ticket not assigned to you")
 
@@ -1088,9 +1135,7 @@ async def mark_parts_received(
     db: Session = Depends(get_db)
 ):
     """Mark parts as received for a ticket"""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket = _ticket_or_404(db, ticket_id, current_user)
 
     part_refs = parts_data.get("parts") or []
     if ticket.status == TicketStatus.WAITING_PARTS:
@@ -1125,9 +1170,7 @@ async def request_parts_approval(
     db: Session = Depends(get_db)
 ):
     """Engineer requests parts approval before using expensive parts"""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket = _ticket_or_404(db, ticket_id, current_user)
     if ticket.assigned_engineer_id != current_user.id:
         raise HTTPException(status_code=403, detail="Ticket not assigned to you")
 
@@ -1166,9 +1209,7 @@ async def confirm_arrival(
     db: Session = Depends(get_db)
 ):
     """Engineer confirms arrival with geo-tag"""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket = _ticket_or_404(db, ticket_id, current_user)
     if ticket.assigned_engineer_id != current_user.id:
         raise HTTPException(status_code=403, detail="Ticket not assigned to you")
 
@@ -1199,11 +1240,7 @@ async def submit_feedback(
     db: Session = Depends(get_db)
 ):
     """Customer submits feedback/dispute after resolution"""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
-    if current_user.role == UserRole.CUSTOMER and ticket.customer_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    ticket = _ticket_or_404(db, ticket_id, current_user)
 
     rating = feedback_data.get("rating")
     feedback = feedback_data.get("feedback")
@@ -1247,9 +1284,7 @@ async def escalate_ticket(
     db: Session = Depends(get_db)
 ):
     """Escalate ticket with reason and type"""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket = _ticket_or_404(db, ticket_id, current_user)
 
     escalation_type = escalation_data.get("escalation_type") or "technical_issue"
     escalation_level = escalation_data.get("escalation_level") or "city"
@@ -1284,8 +1319,10 @@ async def export_assigned_calendar(
     db: Session = Depends(get_db)
 ):
     """Export assigned tickets as an ICS calendar"""
-    tickets = db.query(Ticket).filter(
-        Ticket.assigned_engineer_id == current_user.id,
+    query = apply_ticket_query_scope(
+        db.query(Ticket), current_user, db, assigned_to_me=True
+    )
+    tickets = query.filter(
         Ticket.status.in_([TicketStatus.ASSIGNED, TicketStatus.IN_PROGRESS, TicketStatus.CREATED])
     ).all()
 
@@ -1336,11 +1373,8 @@ async def accept_ticket(
     db: Session = Depends(get_db)
 ):
     """Engineer accepts an assigned ticket"""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
-    
+    ticket = _ticket_or_404(db, ticket_id, current_user)
+
     if ticket.assigned_engineer_id != current_user.id:
         raise HTTPException(status_code=403, detail="Ticket not assigned to you")
     
@@ -1386,18 +1420,7 @@ async def approve_start(
     db: Session = Depends(get_db)
 ):
     """Hierarchy-based approval: city/state/country/org admin approves engineer to start the ticket."""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
-    # Scope: city admin sees city tickets, state sees state, country sees country, org sees org
-    if current_user.role == UserRole.CITY_ADMIN and ticket.city_id != current_user.city_id:
-        raise HTTPException(status_code=403, detail="You can only approve tickets in your city")
-    if current_user.role == UserRole.STATE_ADMIN and ticket.state_id != current_user.state_id:
-        raise HTTPException(status_code=403, detail="You can only approve tickets in your state")
-    if current_user.role == UserRole.COUNTRY_ADMIN and ticket.country_id != current_user.country_id:
-        raise HTTPException(status_code=403, detail="You can only approve tickets in your country")
-    if current_user.role == UserRole.ORGANIZATION_ADMIN and ticket.organization_id != current_user.organization_id:
-        raise HTTPException(status_code=403, detail="You can only approve tickets in your organization")
+    ticket = _ticket_or_404(db, ticket_id, current_user)
     latest = (
         db.query(TicketStartApproval)
         .filter(TicketStartApproval.ticket_id == ticket.id, TicketStartApproval.status == "pending")
@@ -1428,9 +1451,7 @@ async def get_start_approval_status(
     db: Session = Depends(get_db)
 ):
     """Get start approval status for a ticket (for engineer UI)."""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
+    ticket = _ticket_or_404(db, ticket_id, current_user)
     if ticket.assigned_engineer_id != current_user.id and current_user.role not in (
         UserRole.CITY_ADMIN,
         UserRole.STATE_ADMIN,
@@ -1449,11 +1470,8 @@ async def reject_ticket(
     db: Session = Depends(get_db)
 ):
     """Engineer rejects an assigned ticket with reason"""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
-    
+    ticket = _ticket_or_404(db, ticket_id, current_user)
+
     if ticket.assigned_engineer_id != current_user.id:
         raise HTTPException(status_code=403, detail="Ticket not assigned to you")
     
@@ -1490,11 +1508,8 @@ async def reschedule_ticket(
     db: Session = Depends(get_db)
 ):
     """Customer reschedules a ticket - creates new ticket with updated schedule"""
-    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-    
-    if not ticket:
-        raise HTTPException(status_code=404, detail="Ticket not found")
-    
+    ticket = _ticket_or_404(db, ticket_id, current_user)
+
     # Only customer who created the ticket can reschedule
     if ticket.customer_id != current_user.id:
         raise HTTPException(status_code=403, detail="You can only reschedule your own tickets")

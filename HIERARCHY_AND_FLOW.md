@@ -92,8 +92,20 @@ Inventory is scoped by **organization** and **location**: each inventory row has
 
 ### Use part (consume from inventory)
 
-1. Engineer adds parts on ticket resolution: `parts_used` on the ticket (part_id, quantity).
-2. City Admin approves parts usage: **POST /city-admin/tickets/{ticket_id}/approve-parts** — deducts from city inventory (same city as ticket), creates InventoryTransaction type "out".
+**Path A — Engineer requests parts before finishing the job**
+
+1. Engineer: **POST /api/v1/tickets/{id}/parts/request** with `{ "parts": [{ "part_id", "quantity" }] }` → ticket often moves to `waiting_parts`.
+2. City Admin: **POST /api/v1/city-admin/tickets/{id}/approve-parts-request** — authorizes the request (no stock deduction); ticket typically returns to `in_progress` so work / ordering can continue.
+3. Optional: engineer or admin marks **parts ordered** / **parts received** (`/tickets/{id}/parts/ordered`, `/parts/received`).
+4. Engineer resolves the ticket with **POST /api/v1/tickets/{id}/resolve** including **`parts_used`** (same part lines as actually consumed).
+5. City Admin: **POST /api/v1/city-admin/tickets/{id}/approve-parts** — deducts city inventory, `InventoryTransaction` type **out**.
+
+**Path B — Parts only declared at resolution**
+
+1. Engineer: **POST /api/v1/tickets/{id}/resolve** with **`parts_used`**.
+2. City Admin: **POST /api/v1/city-admin/tickets/{id}/approve-parts** — deducts stock (same city + org as inventory row).
+
+**UI:** City Admin dashboard → tab **Parts approval** — **Authorize parts request** (path A, before resolve) vs **Review & deduct stock** (after resolve).
 
 ### Return part (add back to inventory)
 

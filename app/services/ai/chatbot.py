@@ -3,8 +3,12 @@ Multilingual Chatbot Service
 English and Hindi support for case creation, troubleshooting, and status checks
 """
 from typing import Dict, List, Optional, Any
+import json
 import logging
 from datetime import datetime
+from urllib import request as urlrequest
+from urllib.error import URLError, HTTPError
+from urllib.parse import quote
 
 from app.core.config import settings
 
@@ -93,6 +97,91 @@ class MultilingualChatbotService:
             "time": None
         }
     
+    def _chatbot_system_instruction(self, language: str) -> str:
+        return (
+            "You are eRepairing's in-app customer support assistant for home appliance and device repair "
+            "(AC, fridge, washing machine, TV, etc.).\n"
+            "Rules:\n"
+            "- Only answer questions about repairs, tickets, visits, devices, warranty, rescheduling, and how to use the eRepairing customer app.\n"
+            "- If the user asks about anything else, reply in one short sentence that you only help with repair and service on eRepairing.\n"
+            "- Stay factual and relevant. Do not invent ticket numbers, order IDs, or policy details.\n"
+            "- Be brief: at most ~100 words unless the user explicitly asks for a longer explanation. Prefer short paragraphs or bullets.\n"
+            f"- Preferred language code: {language}. Match the user's language (English or Hindi) in your reply.\n"
+            "- Plain text only; avoid markdown headings unless necessary."
+        )
+
+    def _try_gemini_response(
+        self,
+        user_message: str,
+        language: str,
+        context: Optional[Dict],
+        history: Optional[List[Dict[str, str]]],
+    ) -> Optional[str]:
+        """Call Google Gemini when GEMINI_API_KEY is set (preferred for chatbot)."""
+        api_key = (settings.GEMINI_API_KEY or "").strip()
+        if not api_key:
+            return None
+        model = (settings.GEMINI_MODEL or "gemini-2.0-flash").strip()
+        system_text = self._chatbot_system_instruction(language)
+        ctx_line = ""
+        if context:
+            safe_ctx = {k: v for k, v in context.items() if k in ("ticket_id", "device_id", "user_id") and v is not None}
+            if safe_ctx:
+                ctx_line = f"\n[App context: {json.dumps(safe_ctx)}]\n"
+
+        contents: List[Dict[str, Any]] = []
+        if history:
+            for item in history[-8:]:
+                role = item.get("role") or "user"
+                text = (item.get("text") or "").strip()
+                if not text:
+                    continue
+                gemini_role = "model" if role == "assistant" else "user"
+                contents.append({"role": gemini_role, "parts": [{"text": text}]})
+        final_user = f"{ctx_line}{user_message}".strip() if ctx_line else user_message
+        contents.append({"role": "user", "parts": [{"text": final_user}]})
+
+        url = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{quote(model, safe='')}:generateContent?key={quote(api_key, safe='')}"
+        )
+        body = {
+            "systemInstruction": {"parts": [{"text": system_text}]},
+            "contents": contents,
+            "generationConfig": {
+                "temperature": 0.25,
+                "maxOutputTokens": 384,
+                "topP": 0.95,
+            },
+        }
+        try:
+            req = urlrequest.Request(
+                url,
+                data=json.dumps(body).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlrequest.urlopen(req, timeout=25) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            candidates = payload.get("candidates") or []
+            if not candidates:
+                logger.warning("Gemini chatbot: empty candidates")
+                return None
+            parts = (candidates[0].get("content") or {}).get("parts") or []
+            texts = [p.get("text", "") for p in parts if isinstance(p, dict)]
+            out = "".join(texts).strip()
+            return out or None
+        except HTTPError as e:
+            try:
+                err_body = e.read().decode("utf-8", errors="replace")
+                logger.warning("Gemini chatbot HTTPError: %s %s", e.code, err_body[:500])
+            except Exception:
+                logger.warning("Gemini chatbot HTTPError: %s", e)
+            return None
+        except (URLError, TimeoutError, ValueError, json.JSONDecodeError, KeyError, IndexError) as e:
+            logger.warning("Gemini chatbot error: %s", e)
+            return None
+
     async def _generate_response(
         self,
         intent: str,
@@ -102,20 +191,36 @@ class MultilingualChatbotService:
         history: Optional[List[Dict[str, str]]] = None
     ) -> str:
         """Generate response based on intent"""
+        latest = (context.get("message") if context else None) or ""
+
+        gemini_text = self._try_gemini_response(
+            user_message=latest,
+            language=language,
+            context=context,
+            history=history,
+        )
+        if gemini_text:
+            return gemini_text
+
         if settings.OPENAI_API_KEY:
             try:
                 import requests
-                messages = [{"role": "system", "content": "You are a helpful support chatbot."}]
+                messages = [
+                    {
+                        "role": "system",
+                        "content": self._chatbot_system_instruction(language),
+                    }
+                ]
                 if history:
                     for item in history[-6:]:
                         role = "assistant" if item.get("role") == "assistant" else "user"
                         messages.append({"role": role, "content": item.get("text", "")})
-                messages.append({"role": "user", "content": context.get("message") if context and context.get("message") else ""})
-                messages.append({"role": "user", "content": "Respond to the latest user message."})
+                messages.append({"role": "user", "content": latest})
                 payload = {
                     "model": "gpt-4o-mini",
                     "messages": messages,
-                    "temperature": 0.3
+                    "temperature": 0.3,
+                    "max_tokens": 400,
                 }
                 resp = requests.post(
                     "https://api.openai.com/v1/chat/completions",

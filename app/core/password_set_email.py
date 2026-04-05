@@ -6,7 +6,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
+from app.core.config import settings, frontend_base_url
 from app.core.email import send_set_password_email
 from app.core.email_verification import create_email_verification_otp
 from app.models.user import User
@@ -31,6 +31,5 @@ def create_and_send_set_password_token(db: Session, user: User) -> bool:
     db.add(pt)
     db.flush()
     otp_code = create_email_verification_otp(db, user.id, ttl_minutes=15)
-    base_url = getattr(settings, "FRONTEND_URL", "http://localhost:3000").rstrip("/")
-    link = f"{base_url}/set-password?token={token_value}"
+    link = f"{frontend_base_url()}/set-password?token={token_value}"
     return send_set_password_email(user.email, link, user.full_name, email_verification_otp=otp_code)

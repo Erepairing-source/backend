@@ -135,7 +135,10 @@ class Settings(BaseSettings):
     
     # OpenAI (for AI features)
     OPENAI_API_KEY: Optional[str] = None
-    # Free-tier LLM option (Groq). Used by role assistant when provided.
+    # Google Gemini (role assistant + chatbot when set; preferred over Groq/OpenAI for those)
+    GEMINI_API_KEY: Optional[str] = None
+    GEMINI_MODEL: str = "gemini-2.0-flash"
+    # Free-tier LLM option (Groq). Used by role assistant when Gemini/OpenAI unavailable.
     GROQ_API_KEY: Optional[str] = None
     GROQ_MODEL: str = "llama-3.1-8b-instant"
     
@@ -154,7 +157,7 @@ class Settings(BaseSettings):
     SMTP_USE_SSL: bool = False
     SMTP_USE_TLS: bool = True
 
-    # Set-password link: production set to your frontend URL (e.g. https://yourapp.com) so email links work
+    # Production: set to your live site (e.g. https://www.erepairing.com) — all email links use this (set-password, verify, login).
     FRONTEND_URL: str = "http://localhost:3000"
     SET_PASSWORD_TOKEN_EXPIRE_HOURS: int = 24
 
@@ -167,4 +170,10 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
+
+
+def frontend_base_url() -> str:
+    """Public web app origin with no trailing slash. Used for links in emails (set-password, verify-email, login)."""
+    u = (settings.FRONTEND_URL or "").strip().rstrip("/")
+    return u if u else "http://localhost:3000"
 
