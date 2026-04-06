@@ -1904,6 +1904,17 @@ def get_org_analytics(
                 status_distribution[status.value if hasattr(status, 'value') else str(status)] = count
         except Exception:
             status_distribution = {}
+
+        priority_distribution = {}
+        try:
+            pq = db.query(Ticket.priority, func.count(Ticket.id)).filter(Ticket.organization_id == org_id)
+            if start_date:
+                pq = pq.filter(Ticket.created_at >= start_date)
+            pq = pq.group_by(Ticket.priority).all()
+            for pr, cnt in pq:
+                priority_distribution[pr.value if hasattr(pr, "value") else str(pr)] = int(cnt)
+        except Exception:
+            priority_distribution = {}
         
         return {
             "period": period,
@@ -1927,7 +1938,8 @@ def get_org_analytics(
                 "total": parts_count
             },
             "daily_trends": daily_trends,
-            "status_distribution": status_distribution
+            "status_distribution": status_distribution,
+            "priority_distribution": priority_distribution
         }
     except Exception as e:
         import traceback

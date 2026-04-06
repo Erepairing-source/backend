@@ -1049,6 +1049,14 @@ def get_platform_analytics(
         UserModel.last_login >= seven_days_ago
     ).count()
     user_engagement_rate = (active_users_7d / total_users * 100) if total_users > 0 else 0.0
+
+    ticket_priority_distribution = {}
+    try:
+        pr_rows = db.query(Ticket.priority, func.count(Ticket.id)).group_by(Ticket.priority).all()
+        for p, cnt in pr_rows:
+            ticket_priority_distribution[p.value if hasattr(p, "value") else str(p)] = int(cnt)
+    except Exception:
+        ticket_priority_distribution = {}
     
     return {
         "overview": {
@@ -1079,6 +1087,7 @@ def get_platform_analytics(
             "resolved": resolved_tickets,
             "closed": closed_tickets
         },
+        "ticket_priority_distribution": ticket_priority_distribution,
         "distributions": {
             "organization_types": org_type_distribution,
             "subscription_statuses": subscription_status_distribution

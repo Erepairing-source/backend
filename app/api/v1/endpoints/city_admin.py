@@ -17,10 +17,196 @@ from app.services.ai.insights import build_sla_risk_explanation, compute_sla_ris
 from app.models.device import Device
 from app.models.location import City
 from app.models.notification import Notification, NotificationType, NotificationChannel, NotificationStatus
+from app.models.escalation import Escalation, EscalationStatus
 from app.services.ai.anomaly_detection import AnomalyDetectionService
+from app.core.email import send_ticket_resolved_email
+from app.core.config import frontend_base_url
 
 router = APIRouter()
 anomaly_service = AnomalyDetectionService()
+
+
+def _days_from_time_range_city(time_range: str) -> int:
+    key = (time_range or "30d").strip().lower()
+    return {"7d": 7, "30d": 30, "90d": 90, "1y": 365}.get(key, 30)
+
+
+@router.get("/analytics")
+def get_city_admin_analytics(
+    time_range: str = "30d",
+    current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
+    db: Session = Depends(get_db),
+):
+    """Time-series and distributions for city-scoped tickets."""
+    if not current_user.city_id:
+        raise HTTPException(status_code=400, detail="User must be assigned to a city")
+
+    days = _days_from_time_range_city(time_range)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    base = db.query(Ticket).filter(Ticket.city_id == current_user.city_id, Ticket.created_at >= since)
+    if current_user.organization_id:
+        base = base.filter(Ticket.organization_id == current_user.organization_id)
+
+    daily_rows = (
+        db.query(func.date(Ticket.created_at), func.count(Ticket.id))
+        .filter(Ticket.city_id == current_user.city_id, Ticket.created_at >= since)
+    )
+    if current_user.organization_id:
+        daily_rows = daily_rows.filter(Ticket.organization_id == current_user.organization_id)
+    daily_rows = daily_rows.group_by(func.date(Ticket.created_at)).order_by(func.date(Ticket.created_at)).all()
+    daily_trend = [{"date": str(r[0]), "tickets": int(r[1])} for r in daily_rows]
+
+    status_rows = base.with_entities(Ticket.status, func.count(Ticket.id)).group_by(Ticket.status).all()
+    status_distribution = {s.value if hasattr(s, "value") else str(s): int(c) for s, c in status_rows}
+
+    prio_rows = base.with_entities(Ticket.priority, func.count(Ticket.id)).group_by(Ticket.priority).all()
+    priority_distribution = {p.value if hasattr(p, "value") else str(p): int(c) for p, c in prio_rows}
+
+    return {
+        "period": time_range,
+        "daily_trend": daily_trend,
+        "status_distribution": status_distribution,
+        "priority_distribution": priority_distribution,
+    }
+
+
+@router.get("/escalations")
+def list_city_escalations(
+    status_filter: Optional[str] = None,
+    current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
+    db: Session = Depends(get_db),
+):
+    """Escalations for tickets in this city (engineer OTP issues, safety, etc.)."""
+    if not current_user.city_id:
+        raise HTTPException(status_code=400, detail="User must be assigned to a city")
+
+    q = (
+        db.query(Escalation)
+        .join(Ticket, Escalation.ticket_id == Ticket.id)
+        .filter(Ticket.city_id == current_user.city_id)
+    )
+    if current_user.organization_id:
+        q = q.filter(Ticket.organization_id == current_user.organization_id)
+    if status_filter:
+        try:
+            st = EscalationStatus(status_filter)
+            q = q.filter(Escalation.status == st)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid status filter")
+    else:
+        q = q.filter(Escalation.status == EscalationStatus.PENDING)
+
+    rows = q.order_by(Escalation.created_at.desc()).limit(200).all()
+    out = []
+    for e in rows:
+        t = db.query(Ticket).filter(Ticket.id == e.ticket_id).first()
+        extra = e.extra_data if isinstance(e.extra_data, dict) else {}
+        out.append(
+            {
+                "id": e.id,
+                "ticket_id": e.ticket_id,
+                "ticket_number": t.ticket_number if t else None,
+                "status": e.status.value if e.status else None,
+                "escalation_type": e.escalation_type.value if e.escalation_type else None,
+                "escalation_level": e.escalation_level.value if e.escalation_level else None,
+                "reason": e.reason,
+                "extra_data": extra,
+                "created_at": e.created_at.isoformat() if e.created_at else None,
+            }
+        )
+    return out
+
+
+@router.post("/tickets/{ticket_id}/force-close")
+def city_admin_force_close_ticket(
+    ticket_id: int,
+    body: dict = Body(...),
+    current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
+    db: Session = Depends(get_db),
+):
+    """Resolve or close a ticket without customer completion OTP (after engineer escalation)."""
+    resolution_notes = (body.get("resolution_notes") or "").strip()
+    if not resolution_notes:
+        raise HTTPException(status_code=400, detail="resolution_notes is required")
+
+    escalation_id = body.get("escalation_id")
+    close_as = (body.get("close_as") or "resolved").strip().lower()
+
+    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if ticket.city_id != current_user.city_id:
+        raise HTTPException(status_code=403, detail="Ticket is not in your city")
+    if current_user.organization_id and ticket.organization_id != current_user.organization_id:
+        raise HTTPException(status_code=403, detail="Ticket is outside your organization scope")
+
+    suffix = "\n\n[Closed by City Admin — completion OTP not required]"
+    ticket.resolution_notes = resolution_notes + suffix
+    ticket.resolved_at = datetime.now(timezone.utc)
+    ticket.customer_otp_verified = False
+    if close_as == "closed":
+        ticket.status = TicketStatus.CLOSED
+    else:
+        ticket.status = TicketStatus.RESOLVED
+
+    comment = TicketComment(
+        ticket_id=ticket.id,
+        user_id=current_user.id,
+        comment_text="City admin force-closed ticket (OTP waived).",
+        comment_type="resolution",
+        extra_data={"force_close": True, "escalation_id": escalation_id},
+    )
+    db.add(comment)
+
+    if escalation_id:
+        esc = (
+            db.query(Escalation)
+            .filter(Escalation.id == int(escalation_id), Escalation.ticket_id == ticket.id)
+            .first()
+        )
+        if esc:
+            esc.status = EscalationStatus.RESOLVED
+            esc.resolution_notes = "Resolved via city admin force-close"
+            esc.resolved_by_id = current_user.id
+            esc.resolved_at = datetime.now(timezone.utc)
+
+    if ticket.customer_id:
+        db.add(
+            Notification(
+                organization_id=ticket.organization_id,
+                user_id=ticket.customer_id,
+                notification_type=NotificationType.TICKET_RESOLVED,
+                channel=NotificationChannel.IN_APP,
+                title="Ticket closed",
+                message=f"Your ticket {ticket.ticket_number} was closed by the service center.",
+                ticket_id=ticket.id,
+                status=NotificationStatus.PENDING,
+                action_url=f"/customer/ticket/{ticket.id}",
+            )
+        )
+
+    db.commit()
+    db.refresh(ticket)
+
+    cust_email, cust_name = None, None
+    if ticket.customer_id:
+        u = db.query(User).filter(User.id == ticket.customer_id).first()
+        if u and u.email:
+            cust_email, cust_name = u.email, u.full_name
+    if cust_email:
+        try:
+            send_ticket_resolved_email(
+                cust_email,
+                ticket.ticket_number,
+                ticket.resolution_notes or resolution_notes,
+                f"{frontend_base_url()}/customer/ticket/{ticket.id}",
+                cust_name,
+            )
+        except Exception:
+            pass
+
+    return {"message": "Ticket closed by city admin", "ticket_id": ticket.id, "status": ticket.status.value}
 
 
 def _is_assignment_frozen(db: Session, ticket_id: int) -> bool:
@@ -1407,10 +1593,6 @@ def get_redispatch_suggestions(
     for ticket in tickets:
         if _is_assignment_frozen(db, ticket.id):
             continue
-    suggestions = []
-    for ticket in tickets:
-        if _is_assignment_frozen(db, ticket.id):
-            continue
         selected = min(engineers, key=lambda e: workload.get(e.id, 0))
         suggestions.append({
             "ticket_id": ticket.id,
@@ -1418,8 +1600,9 @@ def get_redispatch_suggestions(
             "risk": ticket.sla_breach_risk,
             "suggested_engineer_id": selected.id,
             "suggested_engineer_name": selected.full_name,
-            "reason": "Lowest current workload and available"
+            "reason": "Lowest current workload and available",
         })
+        workload[selected.id] = workload.get(selected.id, 0) + 1
 
     return suggestions
 
@@ -1463,101 +1646,6 @@ async def get_city_fraud_anomalies(
         "detected_anomalies": anomalies.get("detected_anomalies", []) + suspicious,
         "recommendations": anomalies.get("recommendations", [])
     }
-
-
-@router.get("/tickets/redispatch-suggestions")
-def redispatch_suggestions(
-    current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
-    db: Session = Depends(get_db)
-):
-    """Suggest best engineer per high-risk ticket with reasons"""
-    tickets = db.query(Ticket).filter(
-        Ticket.city_id == current_user.city_id,
-        Ticket.status.in_([TicketStatus.CREATED, TicketStatus.ASSIGNED, TicketStatus.IN_PROGRESS])
-    ).order_by(Ticket.created_at.desc()).limit(10).all()
-
-    engineers = db.query(User).filter(
-        User.city_id == current_user.city_id,
-        User.role == UserRole.SUPPORT_ENGINEER,
-        User.is_available == True
-    ).all()
-
-    if not engineers:
-        return []
-
-    engineer_ids = [e.id for e in engineers]
-    workload = dict(
-        db.query(Ticket.assigned_engineer_id, func.count(Ticket.id))
-        .filter(
-            Ticket.assigned_engineer_id.in_(engineer_ids),
-            Ticket.status.in_([TicketStatus.ASSIGNED, TicketStatus.IN_PROGRESS])
-        )
-        .group_by(Ticket.assigned_engineer_id)
-        .all()
-    )
-
-    suggestions = []
-    for ticket in tickets:
-        selected = min(engineers, key=lambda e: workload.get(e.id, 0))
-        reason = f"Lowest workload ({workload.get(selected.id, 0)} active tickets)"
-        suggestions.append({
-            "ticket_id": ticket.id,
-            "ticket_number": ticket.ticket_number,
-            "suggested_engineer_id": selected.id,
-            "suggested_engineer_name": selected.full_name,
-            "reason": reason
-        })
-
-    return suggestions
-
-
-@router.get("/fraud-anomalies")
-def fraud_anomalies(
-    days: int = 30,
-    current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
-    db: Session = Depends(get_db)
-):
-    """Basic fraud anomaly detection for city"""
-    since = datetime.now(timezone.utc) - timedelta(days=days)
-    transactions = db.query(InventoryTransaction).join(Inventory).filter(
-        Inventory.city_id == current_user.city_id,
-        InventoryTransaction.created_at >= since
-    ).all()
-
-    anomalies = []
-    engineer_costs = {}
-    for tx in transactions:
-        if tx.part_id:
-            part = db.query(Part).filter(Part.id == tx.part_id).first()
-            cost = (part.cost_price or part.selling_price or 0) * tx.quantity
-        else:
-            cost = 0
-        engineer_costs.setdefault(tx.performed_by_id, 0)
-        engineer_costs[tx.performed_by_id] += cost
-
-    for engineer_id, total_cost in engineer_costs.items():
-        if total_cost > 20000:
-            anomalies.append({
-                "type": "high_parts_cost",
-                "severity": "medium",
-                "engineer_id": engineer_id,
-                "total_parts_cost": round(total_cost, 2),
-                "description": "Unusually high parts cost for engineer"
-            })
-
-    dispute_tickets = db.query(Ticket).filter(
-        Ticket.city_id == current_user.city_id,
-        Ticket.customer_dispute_tags != None  # noqa: E711
-    ).all()
-    if dispute_tickets:
-        anomalies.append({
-            "type": "customer_disputes",
-            "severity": "low",
-            "count": len(dispute_tickets),
-            "description": "Tickets with customer disputes"
-        })
-
-    return anomalies
 
 
 @router.get("/tickets/{ticket_id}/quality-check")

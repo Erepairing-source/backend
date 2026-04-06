@@ -38,6 +38,62 @@ router = APIRouter()
 forecast_service = DemandForecastingService()
 
 
+def _days_from_time_range_state(time_range: str) -> int:
+    key = (time_range or "30d").strip().lower()
+    return {"7d": 7, "30d": 30, "90d": 90, "1y": 365}.get(key, 30)
+
+
+@router.get("/analytics")
+def get_state_admin_analytics(
+    time_range: str = "30d",
+    current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
+    db: Session = Depends(get_db),
+):
+    """Aggregated chart data for state admin (state cities + optional org scope)."""
+    if not current_user.state_id:
+        raise HTTPException(status_code=400, detail="User must be assigned to a state")
+
+    days = _days_from_time_range_state(time_range)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    cities = db.query(City).filter(City.state_id == current_user.state_id).all()
+    city_ids = [c.id for c in cities]
+    if not city_ids:
+        return {
+            "period": time_range,
+            "daily_trend": [],
+            "status_distribution": {},
+            "priority_distribution": {},
+        }
+
+    org_filter = current_user.organization_id
+    base = db.query(Ticket).filter(Ticket.city_id.in_(city_ids), Ticket.created_at >= since)
+    if org_filter:
+        base = base.filter(Ticket.organization_id == org_filter)
+
+    daily_rows = (
+        db.query(func.date(Ticket.created_at), func.count(Ticket.id))
+        .filter(Ticket.city_id.in_(city_ids), Ticket.created_at >= since)
+    )
+    if org_filter:
+        daily_rows = daily_rows.filter(Ticket.organization_id == org_filter)
+    daily_rows = daily_rows.group_by(func.date(Ticket.created_at)).order_by(func.date(Ticket.created_at)).all()
+    daily_trend = [{"date": str(r[0]), "tickets": int(r[1])} for r in daily_rows]
+
+    status_rows = base.with_entities(Ticket.status, func.count(Ticket.id)).group_by(Ticket.status).all()
+    status_distribution = {s.value if hasattr(s, "value") else str(s): int(c) for s, c in status_rows}
+
+    prio_rows = base.with_entities(Ticket.priority, func.count(Ticket.id)).group_by(Ticket.priority).all()
+    priority_distribution = {p.value if hasattr(p, "value") else str(p): int(c) for p, c in prio_rows}
+
+    return {
+        "period": time_range,
+        "daily_trend": daily_trend,
+        "status_distribution": status_distribution,
+        "priority_distribution": priority_distribution,
+    }
+
+
 def pick_available_engineer_state(db: Session, state_id: int, city_id: Optional[int], organization_id: Optional[int]):
     query = db.query(User).filter(
         User.state_id == state_id,
@@ -188,6 +244,7 @@ def _city_metrics_row(city, db: Session, current_user: User) -> dict:
     return {
         "id": city.id,
         "name": city.name,
+        "ticketCount": len(city_tickets),
         "slaCompliance": round(sla_compliance, 2),
         "mttr": round(mttr, 2),
         "repeatVisits": device_counts,
@@ -239,6 +296,7 @@ def get_state_cities(
                 result.append({
                     "id": None,
                     "name": dist_name,
+                    "ticketCount": 0,
                     "slaCompliance": 0,
                     "mttr": 0,
                     "repeatVisits": 0,

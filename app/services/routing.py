@@ -2,6 +2,7 @@
 Routing service for map directions
 """
 from typing import Optional
+
 import httpx
 
 from app.core.config import settings
@@ -69,8 +70,49 @@ class RoutingService:
 
     async def geocode_address(self, address: str):
         if self.provider == "google":
-            return await self._google_geocode(address)
-        return await self._mapbox_geocode(address)
+            r = await self._google_geocode(address)
+            if not r.get("error"):
+                return r
+            return await self._nominatim_geocode(address)
+        if self.provider in ("osm", "nominatim", "openstreetmap"):
+            return await self._nominatim_geocode(address)
+        r = await self._mapbox_geocode(address)
+        if not r.get("error"):
+            return r
+        return await self._nominatim_geocode(address)
+
+    async def _nominatim_geocode(self, address: str):
+        """OpenStreetMap Nominatim (free, no API key). Respect usage policy: low volume, valid User-Agent."""
+        q = (address or "").strip()
+        if len(q) < 3:
+            return {"error": "Address too short"}
+        url = "https://nominatim.openstreetmap.org/search"
+        params = {"q": q, "format": "json", "limit": 1}
+        headers = {
+            "User-Agent": (settings.NOMINATIM_USER_AGENT or "eRepairing/1.0").strip(),
+            "Accept-Language": "en",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=12) as client:
+                response = await client.get(url, params=params, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+        except httpx.HTTPError as e:
+            return {"error": f"Geocoding service error: {e!s}"}
+        if not data:
+            return {"error": "No results"}
+        row = data[0]
+        try:
+            lat = float(row["lat"])
+            lon = float(row["lon"])
+        except (KeyError, TypeError, ValueError):
+            return {"error": "Invalid geocoding response"}
+        return {
+            "provider": "nominatim",
+            "latitude": lat,
+            "longitude": lon,
+            "formatted_address": row.get("display_name"),
+        }
 
     async def _mapbox_geocode(self, address: str):
         if not settings.MAPBOX_ACCESS_TOKEN:

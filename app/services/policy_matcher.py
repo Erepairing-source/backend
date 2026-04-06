@@ -120,14 +120,22 @@ class PolicyMatcherService:
         Returns:
             Calculated deadline datetime
         """
-        # Get base hours from policy
-        base_hours = policy.target_hours
-        
+        def _coerce_hours(val, default: float = 24.0) -> float:
+            if val is None:
+                return default
+            try:
+                h = float(val)
+                return h if h > 0 else default
+            except (TypeError, ValueError):
+                return default
+
+        base_hours = _coerce_hours(policy.target_hours, 24.0)
+
         # Apply priority override if exists
         if policy.priority_overrides and isinstance(policy.priority_overrides, dict):
             priority_key = priority.value if hasattr(priority, 'value') else str(priority)
             if priority_key in policy.priority_overrides:
-                base_hours = policy.priority_overrides[priority_key]
+                base_hours = _coerce_hours(policy.priority_overrides[priority_key], base_hours)
         
         # Calculate deadline
         if policy.business_hours_only and policy.business_hours:

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query, Body, Resp
 from sqlalchemy.orm import Session
 from typing import List, Optional, Tuple
 from datetime import datetime, timedelta, timezone
+import logging
 import os
 import random
 import string
@@ -17,7 +18,7 @@ from app.core.location_scope import (
     get_device_if_accessible,
     get_ticket_if_accessible,
 )
-from app.core.config import settings
+from app.core.config import settings, frontend_base_url
 from app.core.email import (
     send_otp_email,
     send_ticket_assigned_email,
@@ -40,6 +41,8 @@ from app.services.ai.case_triage import CaseTriageService
 from app.services.ai.sla_prediction import SLABreachPredictionService
 from app.services.policy_matcher import PolicyMatcherService
 from app.models.sla_policy import SLAType
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 triage_service = CaseTriageService()
@@ -66,7 +69,7 @@ def _normalize_service_coord(v) -> Optional[str]:
 
 
 def _ticket_customer_portal_url(ticket_id: int) -> str:
-    return f"{settings.FRONTEND_URL.rstrip('/')}/customer/ticket/{ticket_id}"
+    return f"{frontend_base_url()}/customer/ticket/{ticket_id}"
 
 
 def _customer_email_and_name(db: Session, ticket: Ticket) -> Tuple[Optional[str], Optional[str]]:
@@ -306,8 +309,8 @@ async def create_ticket(
     service_latitude = _normalize_service_coord(service_latitude)
     service_longitude = _normalize_service_coord(service_longitude)
 
-    # Generate ticket number
-    ticket_number = f"TKT-{datetime.utcnow().strftime('%Y%m%d')}-{db.query(Ticket).count() + 1:06d}"
+    # Generate unique ticket number (safe even when rows are deleted/concurrent writes happen)
+    ticket_number = f"TKT-{datetime.utcnow().strftime('%Y%m%d')}-{uuid.uuid4().hex[:10].upper()}"
     
     # AI Triage
     triage_result = await triage_service.triage_ticket(
@@ -391,18 +394,21 @@ async def create_ticket(
         if device:
             parts = [device.model_number, device.serial_number]
             dev_label = " — ".join(p for p in parts if p) or None
-        send_ticket_created_email(
-            to_email=cust_email,
-            ticket_number=ticket.ticket_number,
-            issue_description=issue_description,
-            priority=ticket.priority.value if ticket.priority else "medium",
-            service_address=ticket.service_address,
-            sla_deadline_iso=ticket.sla_deadline.isoformat() if ticket.sla_deadline else None,
-            ticket_link=_ticket_customer_portal_url(ticket.id),
-            full_name=cust_name,
-            issue_category=ticket.issue_category or ticket.ai_triage_category,
-            device_label=dev_label,
-        )
+        try:
+            send_ticket_created_email(
+                to_email=cust_email,
+                ticket_number=ticket.ticket_number,
+                issue_description=issue_description,
+                priority=ticket.priority.value if ticket.priority else "medium",
+                service_address=ticket.service_address,
+                sla_deadline_iso=ticket.sla_deadline.isoformat() if ticket.sla_deadline else None,
+                ticket_link=_ticket_customer_portal_url(ticket.id),
+                full_name=cust_name,
+                issue_category=ticket.issue_category or ticket.ai_triage_category,
+                device_label=dev_label,
+            )
+        except Exception:
+            logger.exception("send_ticket_created_email failed for ticket %s", ticket.id)
     
     return {
         "id": ticket.id,

@@ -126,7 +126,10 @@ class Settings(BaseSettings):
     # Maps
     MAPBOX_ACCESS_TOKEN: Optional[str] = None
     GOOGLE_MAPS_API_KEY: Optional[str] = None
-    MAPS_PROVIDER: str = "mapbox"  # mapbox or google
+    # mapbox | google | osm — osm uses free Nominatim; mapbox/google fall back to Nominatim if keys are missing
+    MAPS_PROVIDER: str = "mapbox"
+    # Required by Nominatim usage policy: identify your application (URL or contact email)
+    NOMINATIM_USER_AGENT: str = "eRepairing/1.0 (https://www.erepairing.com)"
 
     # OEM Warranty Sync
     OEM_WARRANTY_SYNC_ENABLED: bool = False

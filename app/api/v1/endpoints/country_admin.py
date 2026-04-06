@@ -41,6 +41,69 @@ def _get_org_ids(current_user: User, db: Session) -> List[int]:
 router = APIRouter()
 
 
+def _days_from_time_range(time_range: str) -> int:
+    key = (time_range or "30d").strip().lower()
+    return {"7d": 7, "30d": 30, "90d": 90, "1y": 365}.get(key, 30)
+
+
+@router.get("/analytics")
+def get_country_admin_analytics(
+    time_range: str = "30d",
+    current_user: User = Depends(require_role([UserRole.COUNTRY_ADMIN])),
+    db: Session = Depends(get_db),
+):
+    """Aggregated charts data for country admin (scoped to country + org)."""
+    if not current_user.country_id:
+        raise HTTPException(status_code=400, detail="User must be assigned to a country")
+
+    days = _days_from_time_range(time_range)
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    db_states = db.query(State).filter(State.country_id == current_user.country_id).all()
+    state_ids = [s.id for s in db_states]
+    cities = db.query(City).filter(City.state_id.in_(state_ids)).all() if state_ids else []
+    city_ids = [c.id for c in cities]
+    org_ids = _get_org_ids(current_user, db)
+
+    if not city_ids:
+        return {
+            "period": time_range,
+            "daily_trend": [],
+            "status_distribution": {},
+            "priority_distribution": {},
+        }
+
+    base = db.query(Ticket).filter(Ticket.city_id.in_(city_ids), Ticket.created_at >= since)
+    if org_ids:
+        base = base.filter(Ticket.organization_id.in_(org_ids))
+
+    daily_rows = (
+        db.query(func.date(Ticket.created_at), func.count(Ticket.id))
+        .filter(Ticket.city_id.in_(city_ids), Ticket.created_at >= since)
+    )
+    if org_ids:
+        daily_rows = daily_rows.filter(Ticket.organization_id.in_(org_ids))
+    daily_rows = daily_rows.group_by(func.date(Ticket.created_at)).order_by(func.date(Ticket.created_at)).all()
+    daily_trend = [{"date": str(r[0]), "tickets": int(r[1])} for r in daily_rows]
+
+    status_rows = (
+        base.with_entities(Ticket.status, func.count(Ticket.id)).group_by(Ticket.status).all()
+    )
+    status_distribution = {s.value if hasattr(s, "value") else str(s): int(c) for s, c in status_rows}
+
+    prio_rows = (
+        base.with_entities(Ticket.priority, func.count(Ticket.id)).group_by(Ticket.priority).all()
+    )
+    priority_distribution = {p.value if hasattr(p, "value") else str(p): int(c) for p, c in prio_rows}
+
+    return {
+        "period": time_range,
+        "daily_trend": daily_trend,
+        "status_distribution": status_distribution,
+        "priority_distribution": priority_distribution,
+    }
+
+
 @router.get("/dashboard")
 def get_country_dashboard(
     time_range: str = "30d",
@@ -163,6 +226,7 @@ def _state_metrics_row(state, city_ids, org_ids, db: Session):
     return {
         "id": state.id,
         "name": state.name,
+        "ticketCount": len(state_tickets),
         "slaCompliance": round(sla_compliance, 2),
         "mttr": round(mttr, 2),
         "ftfr": round(ftfr, 2),
@@ -208,6 +272,7 @@ def get_country_states(
                 result.append({
                     "id": None,
                     "name": name,
+                    "ticketCount": 0,
                     "slaCompliance": 0,
                     "mttr": 0,
                     "ftfr": 0,
@@ -222,6 +287,186 @@ def get_country_states(
         city_ids = [city.id for city in cities]
         result.append(_state_metrics_row(state, city_ids, org_ids, db))
     return result
+
+
+def _city_metrics_country_admin(city: City, org_ids: List[int], db: Session) -> dict:
+    """Per-city ticket metrics for country admin scope."""
+    q = db.query(Ticket).filter(Ticket.city_id == city.id)
+    if org_ids:
+        q = q.filter(Ticket.organization_id.in_(org_ids))
+    city_tickets = q.all()
+    resolved = [t for t in city_tickets if t.status == TicketStatus.RESOLVED]
+    sla_compliance = (len(resolved) / len(city_tickets) * 100) if city_tickets else 0.0
+    resolved_with_times = [t for t in resolved if t.created_at and t.resolved_at]
+    if resolved_with_times:
+        total_time = sum(
+            (t.resolved_at - t.created_at).total_seconds() / 3600 for t in resolved_with_times
+        )
+        mttr = max(total_time / len(resolved_with_times), 0.0)
+    else:
+        mttr = 0.0
+    ratings = [t.customer_rating for t in city_tickets if t.customer_rating]
+    nps = sum(ratings) / len(ratings) if ratings else 0.0
+    return {
+        "id": city.id,
+        "name": city.name,
+        "tickets": len(city_tickets),
+        "slaCompliance": round(sla_compliance, 2),
+        "mttr": round(mttr, 2),
+        "nps": round(nps, 2),
+    }
+
+
+@router.get("/states/{state_id}/detail")
+def get_country_admin_state_detail(
+    state_id: int,
+    current_user: User = Depends(require_role([UserRole.COUNTRY_ADMIN])),
+    db: Session = Depends(get_db),
+):
+    """Drill-down metrics for one state (must belong to country admin's country)."""
+    if not current_user.country_id:
+        raise HTTPException(status_code=400, detail="User must be assigned to a country")
+
+    state = (
+        db.query(State)
+        .filter(State.id == state_id, State.country_id == current_user.country_id)
+        .first()
+    )
+    if not state:
+        raise HTTPException(status_code=404, detail="State not found")
+
+    cities = db.query(City).filter(City.state_id == state.id).all()
+    city_ids = [c.id for c in cities]
+    org_ids = _get_org_ids(current_user, db)
+
+    summary = _state_metrics_row(state, city_ids, org_ids, db)
+    cities_breakdown = [_city_metrics_country_admin(c, org_ids, db) for c in cities]
+
+    base = db.query(Ticket).filter(Ticket.city_id.in_(city_ids))
+    if org_ids:
+        base = base.filter(Ticket.organization_id.in_(org_ids))
+
+    status_rows = (
+        base.with_entities(Ticket.status, func.count(Ticket.id))
+        .group_by(Ticket.status)
+        .all()
+    )
+    status_distribution = {s.value if hasattr(s, "value") else str(s): int(c) for s, c in status_rows}
+
+    prio_rows = (
+        base.with_entities(Ticket.priority, func.count(Ticket.id))
+        .group_by(Ticket.priority)
+        .all()
+    )
+    priority_distribution = {p.value if hasattr(p, "value") else str(p): int(c) for p, c in prio_rows}
+
+    since = datetime.now(timezone.utc) - timedelta(days=30)
+    daily_rows = (
+        db.query(func.date(Ticket.created_at).label("d"), func.count(Ticket.id))
+        .filter(Ticket.city_id.in_(city_ids), Ticket.created_at >= since)
+    )
+    if org_ids:
+        daily_rows = daily_rows.filter(Ticket.organization_id.in_(org_ids))
+    daily_rows = daily_rows.group_by(func.date(Ticket.created_at)).order_by(func.date(Ticket.created_at)).all()
+
+    daily_trend = [{"date": str(row[0]), "tickets": int(row[1])} for row in daily_rows]
+
+    return {
+        "state": {"id": state.id, "name": state.name, "country_id": state.country_id},
+        "summary": summary,
+        "cities": cities_breakdown,
+        "status_distribution": status_distribution,
+        "priority_distribution": priority_distribution,
+        "daily_trend": daily_trend,
+    }
+
+
+@router.get("/partners/{partner_id}/detail")
+def get_country_admin_partner_detail(
+    partner_id: int,
+    current_user: User = Depends(require_role([UserRole.COUNTRY_ADMIN])),
+    db: Session = Depends(get_db),
+):
+    """Drill-down for a linked service partner (OEM country admins only)."""
+    if not current_user.organization_id:
+        raise HTTPException(status_code=400, detail="Organization required")
+
+    org = db.query(Organization).filter(Organization.id == current_user.organization_id).first()
+    if not org or org.org_type.value != "oem":
+        raise HTTPException(status_code=403, detail="Partner details available for OEM organizations only")
+
+    link = (
+        db.query(OrganizationHierarchy)
+        .filter(
+            OrganizationHierarchy.oem_organization_id == current_user.organization_id,
+            OrganizationHierarchy.service_partner_id == partner_id,
+        )
+        .first()
+    )
+    if not link:
+        raise HTTPException(status_code=404, detail="Partner not found or not linked to your organization")
+
+    partner = db.query(Organization).filter(Organization.id == partner_id).first()
+    if not partner:
+        raise HTTPException(status_code=404, detail="Partner not found")
+
+    tickets = db.query(Ticket).filter(Ticket.organization_id == partner.id).all()
+    resolved = [t for t in tickets if t.status == TicketStatus.RESOLVED]
+    sla_adherence = (len(resolved) / len(tickets) * 100) if tickets else 0.0
+    resolved_with_times = [t for t in resolved if t.created_at and t.resolved_at]
+    if resolved_with_times:
+        mttr = sum(
+            (t.resolved_at - t.created_at).total_seconds() / 3600 for t in resolved_with_times
+        ) / len(resolved_with_times)
+    else:
+        mttr = 0.0
+    ratings = [t.customer_rating for t in tickets if t.customer_rating]
+    nps = sum(ratings) / len(ratings) if ratings else 0.0
+
+    status_rows = (
+        db.query(Ticket.status, func.count(Ticket.id))
+        .filter(Ticket.organization_id == partner.id)
+        .group_by(Ticket.status)
+        .all()
+    )
+    status_distribution = {s.value if hasattr(s, "value") else str(s): int(c) for s, c in status_rows}
+
+    prio_rows = (
+        db.query(Ticket.priority, func.count(Ticket.id))
+        .filter(Ticket.organization_id == partner.id)
+        .group_by(Ticket.priority)
+        .all()
+    )
+    priority_distribution = {p.value if hasattr(p, "value") else str(p): int(c) for p, c in prio_rows}
+
+    since = datetime.now(timezone.utc) - timedelta(days=30)
+    daily_rows = (
+        db.query(func.date(Ticket.created_at).label("d"), func.count(Ticket.id))
+        .filter(Ticket.organization_id == partner.id, Ticket.created_at >= since)
+        .group_by(func.date(Ticket.created_at))
+        .order_by(func.date(Ticket.created_at))
+        .all()
+    )
+    daily_trend = [{"date": str(row[0]), "tickets": int(row[1])} for row in daily_rows]
+
+    return {
+        "partner": {
+            "id": partner.id,
+            "name": partner.name,
+            "email": partner.email,
+            "phone": getattr(partner, "phone", None),
+        },
+        "metrics": {
+            "ticketsHandled": len(tickets),
+            "slaAdherence": round(sla_adherence, 2),
+            "mttr": round(mttr, 2),
+            "nps": round(nps, 2),
+            "costPerTicket": 0.0,
+        },
+        "status_distribution": status_distribution,
+        "priority_distribution": priority_distribution,
+        "daily_trend": daily_trend,
+    }
 
 
 @router.get("/warranty-abuse")
