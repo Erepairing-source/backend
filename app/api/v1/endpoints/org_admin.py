@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status, Body, UploadFile, File
 from sqlalchemy.orm import Session
 from typing import List, Optional
-from sqlalchemy import func, and_, or_
+from sqlalchemy import func, and_, or_, case
 from sqlalchemy.orm import joinedload
 from datetime import datetime, timedelta, timezone
 import json
@@ -1757,29 +1757,27 @@ def get_org_analytics(
     
     org_id = current_user.organization_id
     
-    # Calculate period
-    from datetime import datetime, timedelta, timezone
-    if period == "7d":
-        start_date = datetime.now(timezone.utc) - timedelta(days=7)
-    elif period == "30d":
-        start_date = datetime.now(timezone.utc) - timedelta(days=30)
-    elif period == "90d":
-        start_date = datetime.now(timezone.utc) - timedelta(days=90)
-    elif period == "1y":
-        start_date = datetime.now(timezone.utc) - timedelta(days=365)
-    else:
-        start_date = None
+    # Calculate period window once and reuse for all analytics queries.
+    now_utc = datetime.now(timezone.utc)
+    period_days = {"7d": 7, "30d": 30, "90d": 90, "1y": 365}
+    start_date = now_utc - timedelta(days=period_days[period]) if period in period_days else None
     
     try:
-        # Ticket analytics
-        ticket_query = db.query(Ticket).filter(Ticket.organization_id == org_id)
+        ticket_filters = [Ticket.organization_id == org_id]
         if start_date:
-            ticket_query = ticket_query.filter(Ticket.created_at >= start_date)
-        
-        total_tickets = ticket_query.count()
-        resolved_tickets = ticket_query.filter(Ticket.status == TicketStatus.RESOLVED).count()
-        open_tickets = ticket_query.filter(Ticket.status.in_([TicketStatus.CREATED, TicketStatus.ASSIGNED, TicketStatus.IN_PROGRESS])).count()
-        closed_tickets = ticket_query.filter(Ticket.status == TicketStatus.CLOSED).count()
+            ticket_filters.append(Ticket.created_at >= start_date)
+
+        totals_row = db.query(
+            func.count(Ticket.id).label("total"),
+            func.coalesce(func.sum(case((Ticket.status == TicketStatus.RESOLVED, 1), else_=0)), 0).label("resolved"),
+            func.coalesce(func.sum(case((Ticket.status.in_([TicketStatus.CREATED, TicketStatus.ASSIGNED, TicketStatus.IN_PROGRESS]), 1), else_=0)), 0).label("open"),
+            func.coalesce(func.sum(case((Ticket.status == TicketStatus.CLOSED, 1), else_=0)), 0).label("closed"),
+        ).filter(*ticket_filters).one()
+
+        total_tickets = int(totals_row.total or 0)
+        resolved_tickets = int(totals_row.resolved or 0)
+        open_tickets = int(totals_row.open or 0)
+        closed_tickets = int(totals_row.closed or 0)
         
         # Calculate SLA compliance (tickets resolved within SLA)
         # For now, we'll use resolved/total as a simple metric
@@ -1810,81 +1808,94 @@ def get_org_analytics(
         except Exception:
             parts_count = 0
         
-        # Generate daily/weekly trends for charts
+        # Generate trends using grouped queries (avoids N-per-day query loops/timeouts).
         daily_trends = []
         if start_date:
-            from datetime import timedelta
-            current_date = start_date
-            end_date = datetime.now(timezone.utc)
-            
-            # Determine interval based on period length
-            days_diff = (end_date - start_date).days
-            if days_diff <= 30:
-                # Daily data for short periods
-                interval_days = 1
-                date_format = "%b %d"
-            elif days_diff <= 90:
-                # Weekly data for medium periods
-                interval_days = 7
-                date_format = "%b %d"
-            else:
-                # Monthly data for long periods
-                interval_days = 30
-                date_format = "%b %Y"
-            
-            while current_date <= end_date:
-                period_start = current_date.replace(hour=0, minute=0, second=0, microsecond=0)
-                period_end = period_start + timedelta(days=interval_days)
-                if period_end > end_date:
-                    period_end = end_date
-                
-                period_tickets = db.query(func.count(Ticket.id)).filter(
-                    Ticket.organization_id == org_id,
-                    Ticket.created_at >= period_start,
-                    Ticket.created_at < period_end
-                ).scalar() or 0
-                
-                period_resolved = db.query(func.count(Ticket.id)).filter(
-                    Ticket.organization_id == org_id,
-                    Ticket.status == TicketStatus.RESOLVED,
-                    Ticket.updated_at >= period_start,
-                    Ticket.updated_at < period_end
-                ).scalar() or 0
-                
+            created_rows = db.query(
+                func.date(Ticket.created_at).label("bucket"),
+                func.count(Ticket.id).label("count")
+            ).filter(
+                Ticket.organization_id == org_id,
+                Ticket.created_at >= start_date
+            ).group_by(func.date(Ticket.created_at)).all()
+            created_by_day = {
+                r.bucket.isoformat() if hasattr(r.bucket, "isoformat") else str(r.bucket): int(r.count or 0)
+                for r in created_rows if r.bucket is not None
+            }
+
+            resolved_rows = db.query(
+                func.date(Ticket.updated_at).label("bucket"),
+                func.count(Ticket.id).label("count")
+            ).filter(
+                Ticket.organization_id == org_id,
+                Ticket.status == TicketStatus.RESOLVED,
+                Ticket.updated_at >= start_date
+            ).group_by(func.date(Ticket.updated_at)).all()
+            resolved_by_day = {
+                r.bucket.isoformat() if hasattr(r.bucket, "isoformat") else str(r.bucket): int(r.count or 0)
+                for r in resolved_rows if r.bucket is not None
+            }
+
+            interval_days = 1 if period in ("7d", "30d") else (7 if period == "90d" else 30)
+            date_format = "%b %d" if interval_days < 30 else "%b %Y"
+
+            cursor = start_date.replace(hour=0, minute=0, second=0, microsecond=0)
+            range_end_exclusive = now_utc.replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+            while cursor < range_end_exclusive:
+                bucket_end = min(cursor + timedelta(days=interval_days), range_end_exclusive)
+                running_created = 0
+                running_resolved = 0
+                d = cursor
+                while d < bucket_end:
+                    key = d.date().isoformat()
+                    running_created += created_by_day.get(key, 0)
+                    running_resolved += resolved_by_day.get(key, 0)
+                    d += timedelta(days=1)
+
                 daily_trends.append({
-                    "date": period_start.strftime("%Y-%m-%d"),
-                    "day": period_start.strftime(date_format),
-                    "tickets": period_tickets,
-                    "resolved": period_resolved
+                    "date": cursor.strftime("%Y-%m-%d"),
+                    "day": cursor.strftime(date_format),
+                    "tickets": running_created,
+                    "resolved": running_resolved
                 })
-                
-                current_date = period_end
+                cursor = bucket_end
         else:
-            # For "all time", show monthly data for last 12 months
-            from datetime import timedelta
-            end_date = datetime.now(timezone.utc)
-            for i in range(12):
-                month_start = (end_date - timedelta(days=30 * (12 - i))).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-                month_end = month_start + timedelta(days=30)
-                
-                month_tickets = db.query(func.count(Ticket.id)).filter(
-                    Ticket.organization_id == org_id,
-                    Ticket.created_at >= month_start,
-                    Ticket.created_at < month_end
-                ).scalar() or 0
-                
-                month_resolved = db.query(func.count(Ticket.id)).filter(
-                    Ticket.organization_id == org_id,
-                    Ticket.status == TicketStatus.RESOLVED,
-                    Ticket.updated_at >= month_start,
-                    Ticket.updated_at < month_end
-                ).scalar() or 0
-                
+            # For "all", keep last 12 months with monthly grouped aggregations.
+            month_start = now_utc.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            month_starts = []
+            for _ in range(12):
+                month_starts.append(month_start)
+                prev_month_last_day = month_start - timedelta(days=1)
+                month_start = prev_month_last_day.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            month_starts = list(reversed(month_starts))
+            first_month = month_starts[0]
+
+            created_rows = db.query(
+                func.date_format(Ticket.created_at, "%Y-%m").label("bucket"),
+                func.count(Ticket.id).label("count")
+            ).filter(
+                Ticket.organization_id == org_id,
+                Ticket.created_at >= first_month
+            ).group_by(func.date_format(Ticket.created_at, "%Y-%m")).all()
+            created_by_month = {str(r.bucket): int(r.count or 0) for r in created_rows if r.bucket}
+
+            resolved_rows = db.query(
+                func.date_format(Ticket.updated_at, "%Y-%m").label("bucket"),
+                func.count(Ticket.id).label("count")
+            ).filter(
+                Ticket.organization_id == org_id,
+                Ticket.status == TicketStatus.RESOLVED,
+                Ticket.updated_at >= first_month
+            ).group_by(func.date_format(Ticket.updated_at, "%Y-%m")).all()
+            resolved_by_month = {str(r.bucket): int(r.count or 0) for r in resolved_rows if r.bucket}
+
+            for m in month_starts:
+                bucket = m.strftime("%Y-%m")
                 daily_trends.append({
-                    "date": month_start.strftime("%Y-%m-%d"),
-                    "day": month_start.strftime("%b %Y"),
-                    "tickets": month_tickets,
-                    "resolved": month_resolved
+                    "date": m.strftime("%Y-%m-%d"),
+                    "day": m.strftime("%b %Y"),
+                    "tickets": created_by_month.get(bucket, 0),
+                    "resolved": resolved_by_month.get(bucket, 0)
                 })
         
         # Generate status distribution
