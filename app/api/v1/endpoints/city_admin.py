@@ -3,7 +3,7 @@ City Admin endpoints
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Body
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, and_, or_
+from sqlalchemy import func, and_, or_, text
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
 
@@ -97,25 +97,71 @@ def list_city_escalations(
     else:
         q = q.filter(Escalation.status.in_([EscalationStatus.PENDING, EscalationStatus.ACKNOWLEDGED]))
 
-    rows = q.order_by(Escalation.created_at.desc()).limit(200).all()
-    out = []
-    for e in rows:
-        t = db.query(Ticket).filter(Ticket.id == e.ticket_id).first()
-        extra = e.extra_data if isinstance(e.extra_data, dict) else {}
-        out.append(
+    def _enum_or_str(value):
+        if value is None:
+            return None
+        return value.value if hasattr(value, "value") else str(value)
+
+    try:
+        rows = q.order_by(Escalation.created_at.desc()).limit(200).all()
+        out = []
+        for e in rows:
+            t = db.query(Ticket).filter(Ticket.id == e.ticket_id).first()
+            extra = e.extra_data if isinstance(e.extra_data, dict) else {}
+            out.append(
+                {
+                    "id": e.id,
+                    "ticket_id": e.ticket_id,
+                    "ticket_number": t.ticket_number if t else None,
+                    "status": _enum_or_str(e.status),
+                    "escalation_type": _enum_or_str(e.escalation_type),
+                    "escalation_level": _enum_or_str(e.escalation_level),
+                    "reason": e.reason,
+                    "extra_data": extra,
+                    "created_at": e.created_at.isoformat() if e.created_at else None,
+                }
+            )
+        return out
+    except Exception:
+        # Fallback for legacy enum values in production DB that don't map to current Python enums.
+        sql = """
+            SELECT e.id, e.ticket_id, t.ticket_number, e.status, e.escalation_type, e.escalation_level,
+                   e.reason, e.extra_data, e.created_at
+            FROM escalations e
+            LEFT JOIN tickets t ON t.id = e.ticket_id
+            WHERE t.city_id = :city_id
+              AND (:org_id IS NULL OR t.organization_id = :org_id)
+              AND (:status_filter IS NULL OR e.status = :status_filter)
+              AND (:status_filter IS NOT NULL OR e.status IN ('pending', 'acknowledged'))
+            ORDER BY e.created_at DESC
+            LIMIT 200
+        """
+        rows = db.execute(
+            text(sql),
             {
-                "id": e.id,
-                "ticket_id": e.ticket_id,
-                "ticket_number": t.ticket_number if t else None,
-                "status": e.status.value if e.status else None,
-                "escalation_type": e.escalation_type.value if e.escalation_type else None,
-                "escalation_level": e.escalation_level.value if e.escalation_level else None,
-                "reason": e.reason,
-                "extra_data": extra,
-                "created_at": e.created_at.isoformat() if e.created_at else None,
-            }
-        )
-    return out
+                "city_id": current_user.city_id,
+                "org_id": current_user.organization_id,
+                "status_filter": status_filter,
+            },
+        ).mappings().all()
+        out = []
+        for r in rows:
+            extra = r.get("extra_data") if isinstance(r.get("extra_data"), dict) else {}
+            created = r.get("created_at")
+            out.append(
+                {
+                    "id": r.get("id"),
+                    "ticket_id": r.get("ticket_id"),
+                    "ticket_number": r.get("ticket_number"),
+                    "status": r.get("status"),
+                    "escalation_type": r.get("escalation_type"),
+                    "escalation_level": r.get("escalation_level"),
+                    "reason": r.get("reason"),
+                    "extra_data": extra,
+                    "created_at": created.isoformat() if hasattr(created, "isoformat") else None,
+                }
+            )
+        return out
 
 
 @router.post("/escalations/{escalation_id}/approve")

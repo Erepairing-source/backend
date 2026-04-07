@@ -16,6 +16,7 @@ from app.core.database import get_db
 from app.core.location_scope import apply_user_query_scope
 from app.core.location_resolution import materialize_user_location_ids
 from app.core.permissions import get_current_user, require_role
+from app.core.config import frontend_base_url
 from app.core.security import get_password_hash, get_pending_password_hash
 from app.core.password_set_email import create_and_send_set_password_token
 from app.core.email import send_credentials_email
@@ -402,7 +403,7 @@ async def bulk_create_customers(
                 status_code=400,
                 detail=f"Excel must have columns: full_name, email, phone. Found: {list(df.columns)}"
             )
-    login_url = (getattr(settings, "FRONTEND_URL", "http://localhost:3000") or "http://localhost:3000").rstrip("/") + "/login"
+    login_url = f"{frontend_base_url()}/login"
     created = 0
     skipped = 0
     errors = []

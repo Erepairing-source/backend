@@ -160,8 +160,8 @@ class Settings(BaseSettings):
     SMTP_USE_SSL: bool = False
     SMTP_USE_TLS: bool = True
 
-    # Production: set to your live site (e.g. https://www.erepairing.com) — all email links use this (set-password, verify, login).
-    FRONTEND_URL: str = "http://localhost:3000"
+    # Public web URL used in email links (set-password, verify-email, login).
+    FRONTEND_URL: str = "https://api.erepairing.com"
     SET_PASSWORD_TOKEN_EXPIRE_HOURS: int = 24
 
     # Daily reminder job: POST /api/v1/jobs/reminders/run with header X-Reminder-Secret
@@ -178,5 +178,5 @@ settings = Settings()
 def frontend_base_url() -> str:
     """Public web app origin with no trailing slash. Used for links in emails (set-password, verify-email, login)."""
     u = (settings.FRONTEND_URL or "").strip().rstrip("/")
-    return u if u else "http://localhost:3000"
+    return u if u else "https://api.erepairing.com"
 
