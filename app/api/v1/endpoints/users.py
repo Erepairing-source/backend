@@ -341,6 +341,8 @@ def update_my_location(
 def list_users(
     role: UserRole = None,
     organization_id: int = None,
+    state_id: int = None,
+    city_id: int = None,
     current_user: User = Depends(require_role([
         UserRole.ORGANIZATION_ADMIN,
         UserRole.PLATFORM_ADMIN,
@@ -357,6 +359,10 @@ def list_users(
         query = query.filter(User.role == role)
     if organization_id:
         query = query.filter(User.organization_id == organization_id)
+    if state_id:
+        query = query.filter(User.state_id == state_id)
+    if city_id:
+        query = query.filter(User.city_id == city_id)
     
     users = query.all()
     return users

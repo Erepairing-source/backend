@@ -95,7 +95,7 @@ def list_city_escalations(
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid status filter")
     else:
-        q = q.filter(Escalation.status == EscalationStatus.PENDING)
+        q = q.filter(Escalation.status.in_([EscalationStatus.PENDING, EscalationStatus.ACKNOWLEDGED]))
 
     rows = q.order_by(Escalation.created_at.desc()).limit(200).all()
     out = []
@@ -116,6 +116,49 @@ def list_city_escalations(
             }
         )
     return out
+
+
+@router.post("/escalations/{escalation_id}/approve")
+def approve_city_escalation(
+    escalation_id: int,
+    body: dict = Body(default={}),
+    current_user: User = Depends(require_role([UserRole.CITY_ADMIN])),
+    db: Session = Depends(get_db),
+):
+    """Acknowledge an escalation before force-close/resolution actions."""
+    esc = (
+        db.query(Escalation)
+        .join(Ticket, Escalation.ticket_id == Ticket.id)
+        .filter(Escalation.id == escalation_id)
+        .first()
+    )
+    if not esc:
+        raise HTTPException(status_code=404, detail="Escalation not found")
+
+    ticket = db.query(Ticket).filter(Ticket.id == esc.ticket_id).first()
+    if not ticket:
+        raise HTTPException(status_code=404, detail="Ticket not found")
+    if ticket.city_id != current_user.city_id:
+        raise HTTPException(status_code=403, detail="Escalation is not in your city")
+    if current_user.organization_id and ticket.organization_id != current_user.organization_id:
+        raise HTTPException(status_code=403, detail="Escalation is outside your organization scope")
+
+    if esc.status in [EscalationStatus.RESOLVED, EscalationStatus.CLOSED]:
+        raise HTTPException(status_code=400, detail="Escalation is already closed")
+
+    esc.status = EscalationStatus.ACKNOWLEDGED
+    note = (body.get("approval_notes") or "").strip()
+    db.add(
+        TicketComment(
+            ticket_id=ticket.id,
+            user_id=current_user.id,
+            comment_text=note or "City admin acknowledged escalation and started review.",
+            comment_type="escalation_approval",
+            extra_data={"escalation_id": esc.id, "approved": True},
+        )
+    )
+    db.commit()
+    return {"message": "Escalation approved", "escalation_id": esc.id, "status": esc.status.value}
 
 
 @router.post("/tickets/{ticket_id}/force-close")
@@ -141,6 +184,33 @@ def city_admin_force_close_ticket(
     if current_user.organization_id and ticket.organization_id != current_user.organization_id:
         raise HTTPException(status_code=403, detail="Ticket is outside your organization scope")
 
+    # Force-close is allowed only for OTP-unavailable escalations after city admin approval.
+    esc = None
+    if escalation_id:
+        esc = (
+            db.query(Escalation)
+            .filter(Escalation.id == int(escalation_id), Escalation.ticket_id == ticket.id)
+            .first()
+        )
+    else:
+        esc = (
+            db.query(Escalation)
+            .filter(
+                Escalation.ticket_id == ticket.id,
+                Escalation.status.in_([EscalationStatus.PENDING, EscalationStatus.ACKNOWLEDGED]),
+            )
+            .order_by(Escalation.created_at.desc())
+            .first()
+        )
+    if not esc:
+        raise HTTPException(status_code=400, detail="No active escalation found for this ticket")
+
+    esc_extra = esc.extra_data if isinstance(esc.extra_data, dict) else {}
+    if esc_extra.get("subtype") != "completion_otp_not_provided":
+        raise HTTPException(status_code=400, detail="Force close is only allowed for completion OTP escalations")
+    if esc.status != EscalationStatus.ACKNOWLEDGED:
+        raise HTTPException(status_code=400, detail="Escalation must be approved by city admin before force close")
+
     suffix = "\n\n[Closed by City Admin — completion OTP not required]"
     ticket.resolution_notes = resolution_notes + suffix
     ticket.resolved_at = datetime.now(timezone.utc)
@@ -159,17 +229,10 @@ def city_admin_force_close_ticket(
     )
     db.add(comment)
 
-    if escalation_id:
-        esc = (
-            db.query(Escalation)
-            .filter(Escalation.id == int(escalation_id), Escalation.ticket_id == ticket.id)
-            .first()
-        )
-        if esc:
-            esc.status = EscalationStatus.RESOLVED
-            esc.resolution_notes = "Resolved via city admin force-close"
-            esc.resolved_by_id = current_user.id
-            esc.resolved_at = datetime.now(timezone.utc)
+    esc.status = EscalationStatus.RESOLVED
+    esc.resolution_notes = "Resolved via city admin force-close"
+    esc.resolved_by_id = current_user.id
+    esc.resolved_at = datetime.now(timezone.utc)
 
     if ticket.customer_id:
         db.add(
