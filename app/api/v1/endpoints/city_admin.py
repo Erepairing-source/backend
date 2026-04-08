@@ -292,29 +292,49 @@ def city_admin_force_close_ticket(
         raise HTTPException(status_code=403, detail="Ticket is outside your organization scope")
 
     # Force-close is allowed only for OTP-unavailable escalations after city admin approval.
-    esc = None
     if escalation_id:
-        esc = (
-            db.query(Escalation)
-            .filter(Escalation.id == int(escalation_id), Escalation.ticket_id == ticket.id)
-            .first()
-        )
+        esc_row = db.execute(
+            text(
+                """
+                SELECT id, ticket_id, status, escalation_type, reason, extra_data
+                FROM escalations
+                WHERE id = :escalation_id AND ticket_id = :ticket_id
+                LIMIT 1
+                """
+            ),
+            {"escalation_id": int(escalation_id), "ticket_id": ticket.id},
+        ).mappings().first()
     else:
-        esc = (
-            db.query(Escalation)
-            .filter(
-                Escalation.ticket_id == ticket.id,
-                Escalation.status.in_([EscalationStatus.PENDING, EscalationStatus.ACKNOWLEDGED]),
-            )
-            .order_by(Escalation.created_at.desc())
-            .first()
-        )
-    if not esc:
+        esc_row = db.execute(
+            text(
+                """
+                SELECT id, ticket_id, status, escalation_type, reason, extra_data
+                FROM escalations
+                WHERE ticket_id = :ticket_id
+                  AND status IN ('pending', 'acknowledged')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ),
+            {"ticket_id": ticket.id},
+        ).mappings().first()
+
+    if not esc_row:
         raise HTTPException(status_code=400, detail="No active escalation found for this ticket")
 
-    if not _is_completion_otp_escalation(esc):
+    esc_like = type(
+        "EscalationLike",
+        (),
+        {
+            "extra_data": _as_extra_dict(esc_row.get("extra_data")),
+            "escalation_type": esc_row.get("escalation_type"),
+            "reason": esc_row.get("reason"),
+            "status": esc_row.get("status"),
+        },
+    )()
+    if not _is_completion_otp_escalation(esc_like):
         raise HTTPException(status_code=400, detail="Force close is only allowed for completion OTP escalations")
-    if _enum_or_str_lower(esc.status) != "acknowledged":
+    if _enum_or_str_lower(esc_row.get("status")) != "acknowledged":
         raise HTTPException(status_code=400, detail="Escalation must be approved by city admin before force close")
 
     suffix = "\n\n[Closed by City Admin — completion OTP not required]"
@@ -331,14 +351,29 @@ def city_admin_force_close_ticket(
         user_id=current_user.id,
         comment_text="City admin force-closed ticket (OTP waived).",
         comment_type="resolution",
-        extra_data={"force_close": True, "escalation_id": escalation_id},
+        extra_data={"force_close": True, "escalation_id": esc_row.get("id")},
     )
     db.add(comment)
 
-    esc.status = EscalationStatus.RESOLVED
-    esc.resolution_notes = "Resolved via city admin force-close"
-    esc.resolved_by_id = current_user.id
-    esc.resolved_at = datetime.now(timezone.utc)
+    db.execute(
+        text(
+            """
+            UPDATE escalations
+            SET status = :status,
+                resolution_notes = :resolution_notes,
+                resolved_by_id = :resolved_by_id,
+                resolved_at = :resolved_at
+            WHERE id = :escalation_id
+            """
+        ),
+        {
+            "status": "resolved",
+            "resolution_notes": "Resolved via city admin force-close",
+            "resolved_by_id": current_user.id,
+            "resolved_at": datetime.now(timezone.utc),
+            "escalation_id": esc_row.get("id"),
+        },
+    )
 
     if ticket.customer_id:
         db.add(
