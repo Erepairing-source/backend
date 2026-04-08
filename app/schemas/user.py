@@ -55,6 +55,8 @@ class UserResponse(UserBase):
     country_id: Optional[int] = None
     state_id: Optional[int] = None
     city_id: Optional[int] = None
+    state_name: Optional[str] = None
+    city_name: Optional[str] = None
     is_available: Optional[bool] = None
     engineer_skill_level: Optional[str] = None
     engineer_specialization: Optional[str] = None

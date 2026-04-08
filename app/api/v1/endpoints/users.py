@@ -6,7 +6,7 @@ import secrets
 import string
 from fastapi import APIRouter, Depends, HTTPException, status, Body, File, UploadFile, Form
 from fastapi.responses import StreamingResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import func
 from typing import List, Optional
@@ -384,7 +384,10 @@ def list_users(
     state_name_text = _parse_optional_text(state_name)
     city_name_text = _parse_optional_text(city_name)
 
-    query = apply_user_query_scope(db.query(User), current_user)
+    query = apply_user_query_scope(
+        db.query(User).options(joinedload(User.state), joinedload(User.city)),
+        current_user,
+    )
 
     if role:
         query = query.filter(User.role == role)
@@ -404,7 +407,28 @@ def list_users(
         query = query.join(City, User.city_id == City.id).filter(func.lower(City.name) == city_name_text.lower())
     
     users = query.all()
-    return users
+    return [
+        {
+            "id": u.id,
+            "email": u.email,
+            "phone": u.phone,
+            "full_name": u.full_name,
+            "role": u.role,
+            "organization_id": u.organization_id,
+            "country_id": u.country_id,
+            "state_id": u.state_id,
+            "city_id": u.city_id,
+            "state_name": u.state.name if getattr(u, "state", None) else None,
+            "city_name": u.city.name if getattr(u, "city", None) else None,
+            "is_available": u.is_available,
+            "engineer_skill_level": u.engineer_skill_level,
+            "engineer_specialization": u.engineer_specialization,
+            "is_active": u.is_active,
+            "is_verified": u.is_verified,
+            "created_at": u.created_at,
+        }
+        for u in users
+    ]
 
 
 @router.post("/bulk-customers")
