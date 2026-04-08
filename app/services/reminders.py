@@ -10,7 +10,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
+from app.core.config import frontend_base_url
 from app.core.email import send_contract_renewal_reminder_email, send_service_visit_reminder_email
 from app.models.reminder_log import ReminderLog
 from app.models.subscription import Subscription
@@ -64,11 +64,11 @@ def _log_reminder(db: Session, kind: str, ref_type: str, ref_id: int, bucket: st
 
 
 def _org_dashboard_url() -> str:
-    return f"{settings.FRONTEND_URL.rstrip('/')}/organization-admin/dashboard"
+    return f"{frontend_base_url()}/organization-admin/dashboard"
 
 
 def _ticket_portal_url(ticket_id: int) -> str:
-    return f"{settings.FRONTEND_URL.rstrip('/')}/customer/ticket/{ticket_id}"
+    return f"{frontend_base_url()}/customer/ticket/{ticket_id}"
 
 
 def _organization_admin_emails(db: Session, organization_id: int) -> List[User]:

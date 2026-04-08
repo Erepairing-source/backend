@@ -2,6 +2,7 @@
 Device endpoints
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Body, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import Optional, List
 from datetime import datetime
@@ -586,3 +587,41 @@ async def bulk_register_devices(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error processing Excel file: {str(e)}"
         )
+
+
+@router.get("/bulk-register-template")
+def bulk_register_template(
+    current_user: User = Depends(get_current_user),
+):
+    """Download Excel template for customer bulk device registration."""
+    if not OPENPYXL_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Excel processing library (openpyxl) is not installed. Please install it with: pip install openpyxl"
+        )
+
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "Bulk Device Registration"
+
+    headers = [
+        "serial_number",
+        "model_number",
+        "product_category",
+        "brand",
+        "purchase_date",
+        "invoice_number",
+    ]
+    sheet.append(headers)
+    sheet.append(["SN-AC-1001", "AR18TY3Q", "AC", "Samsung", "2026-01-15", "INV-1001"])
+    sheet.append(["SN-WM-2001", "FHM1207ZDL", "Washing Machine", "LG", "2025-11-02", "INV-1002"])
+
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    buffer.seek(0)
+
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=bulk_device_registration_template.xlsx"},
+    )

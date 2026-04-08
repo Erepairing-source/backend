@@ -344,6 +344,9 @@ def list_users(
     organization_id: Optional[str] = None,
     state_id: Optional[str] = None,
     city_id: Optional[str] = None,
+    state_code: Optional[str] = None,
+    state_name: Optional[str] = None,
+    city_name: Optional[str] = None,
     current_user: User = Depends(require_role([
         UserRole.ORGANIZATION_ADMIN,
         UserRole.PLATFORM_ADMIN,
@@ -365,9 +368,20 @@ def list_users(
         except ValueError:
             raise HTTPException(status_code=422, detail=f"{field_name} must be an integer")
 
+    def _parse_optional_text(value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        s = str(value).strip()
+        if not s or s.lower() in ("null", "none", "undefined"):
+            return None
+        return s
+
     organization_id_int = _parse_optional_int(organization_id, "organization_id")
     state_id_int = _parse_optional_int(state_id, "state_id")
     city_id_int = _parse_optional_int(city_id, "city_id")
+    state_code_text = _parse_optional_text(state_code)
+    state_name_text = _parse_optional_text(state_name)
+    city_name_text = _parse_optional_text(city_name)
 
     query = apply_user_query_scope(db.query(User), current_user)
 
@@ -377,8 +391,16 @@ def list_users(
         query = query.filter(User.organization_id == organization_id_int)
     if state_id_int is not None:
         query = query.filter(User.state_id == state_id_int)
+    elif state_code_text:
+        code = state_code_text.upper()
+        query = query.join(State, User.state_id == State.id).filter(func.upper(State.code) == code)
+    elif state_name_text:
+        query = query.join(State, User.state_id == State.id).filter(func.lower(State.name) == state_name_text.lower())
+
     if city_id_int is not None:
         query = query.filter(User.city_id == city_id_int)
+    elif city_name_text:
+        query = query.join(City, User.city_id == City.id).filter(func.lower(City.name) == city_name_text.lower())
     
     users = query.all()
     return users

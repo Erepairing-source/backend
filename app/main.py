@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from sqlalchemy import text
 
-from app.core.config import settings
+from app.core.config import settings, frontend_base_url
 from app.core.database import Base, engine
 from app.api.v1.api import api_router
 from app.services.oem_sync_job import start_oem_sync_loop, try_acquire_oem_sync_leader_lock
@@ -58,11 +58,11 @@ async def startup_event():
         print("You may need to run migrations or create tables manually.")
         print("Run: python -m backend.scripts.create_new_tables")
 
-    fu = (settings.FRONTEND_URL or "").lower()
+    fu = frontend_base_url().lower()
     if fu and "localhost" in fu and settings.ENVIRONMENT.lower() == "production":
         print(
-            "[WARN] FRONTEND_URL points to localhost while ENVIRONMENT=production; "
-            "set FRONTEND_URL to your live site (e.g. https://www.erepairing.com) so email links work."
+            "[WARN] WEB_APP_URL/FRONTEND_URL points to localhost while ENVIRONMENT=production; "
+            "set WEB_APP_URL to your live frontend (e.g. https://www.erepairing.com) so email links work."
         )
 
     if settings.OEM_WARRANTY_SYNC_ENABLED:

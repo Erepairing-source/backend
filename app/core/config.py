@@ -1,6 +1,6 @@
 """
 Application configuration.
-Production: set CORS_ORIGINS, ALLOWED_HOSTS, FRONTEND_URL (and DATABASE_URL, SECRET_KEY, SMTP_*) in .env.
+Production: set CORS_ORIGINS, ALLOWED_HOSTS, WEB_APP_URL/FRONTEND_URL (and DATABASE_URL, SECRET_KEY, SMTP_*) in .env.
 """
 import json
 import os
@@ -160,8 +160,10 @@ class Settings(BaseSettings):
     SMTP_USE_SSL: bool = False
     SMTP_USE_TLS: bool = True
 
-    # Public web URL used in email links (set-password, verify-email, login).
-    FRONTEND_URL: str = "https://api.erepairing.com"
+    # Public frontend URL used in email links (set-password, verify-email, login, ticket links).
+    WEB_APP_URL: str = "https://www.erepairing.com"
+    # Backward-compatible fallback (older deployments used FRONTEND_URL).
+    FRONTEND_URL: str = "https://www.erepairing.com"
     SET_PASSWORD_TOKEN_EXPIRE_HOURS: int = 24
 
     # Daily reminder job: POST /api/v1/jobs/reminders/run with header X-Reminder-Secret
@@ -177,6 +179,9 @@ settings = Settings()
 
 def frontend_base_url() -> str:
     """Public web app origin with no trailing slash. Used for links in emails (set-password, verify-email, login)."""
-    u = (settings.FRONTEND_URL or "").strip().rstrip("/")
-    return u if u else "https://api.erepairing.com"
+    web = (settings.WEB_APP_URL or "").strip().rstrip("/")
+    if web:
+        return web
+    legacy = (settings.FRONTEND_URL or "").strip().rstrip("/")
+    return legacy if legacy else "https://www.erepairing.com"
 
