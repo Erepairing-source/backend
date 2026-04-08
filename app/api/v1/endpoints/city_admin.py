@@ -172,27 +172,38 @@ def approve_city_escalation(
     db: Session = Depends(get_db),
 ):
     """Acknowledge an escalation before force-close/resolution actions."""
-    esc = (
-        db.query(Escalation)
-        .join(Ticket, Escalation.ticket_id == Ticket.id)
-        .filter(Escalation.id == escalation_id)
-        .first()
-    )
-    if not esc:
+    row = db.execute(
+        text(
+            """
+            SELECT e.id, e.ticket_id, e.status, t.city_id, t.organization_id
+            FROM escalations e
+            JOIN tickets t ON t.id = e.ticket_id
+            WHERE e.id = :escalation_id
+            LIMIT 1
+            """
+        ),
+        {"escalation_id": escalation_id},
+    ).mappings().first()
+
+    if not row:
         raise HTTPException(status_code=404, detail="Escalation not found")
 
-    ticket = db.query(Ticket).filter(Ticket.id == esc.ticket_id).first()
+    ticket = db.query(Ticket).filter(Ticket.id == row.get("ticket_id")).first()
     if not ticket:
         raise HTTPException(status_code=404, detail="Ticket not found")
-    if ticket.city_id != current_user.city_id:
+    if row.get("city_id") != current_user.city_id:
         raise HTTPException(status_code=403, detail="Escalation is not in your city")
-    if current_user.organization_id and ticket.organization_id != current_user.organization_id:
+    if current_user.organization_id and row.get("organization_id") != current_user.organization_id:
         raise HTTPException(status_code=403, detail="Escalation is outside your organization scope")
 
-    if esc.status in [EscalationStatus.RESOLVED, EscalationStatus.CLOSED]:
+    current_status = str(row.get("status") or "").strip().lower()
+    if current_status in ("resolved", "closed"):
         raise HTTPException(status_code=400, detail="Escalation is already closed")
 
-    esc.status = EscalationStatus.ACKNOWLEDGED
+    db.execute(
+        text("UPDATE escalations SET status = :status WHERE id = :escalation_id"),
+        {"status": "acknowledged", "escalation_id": escalation_id},
+    )
     note = (body.get("approval_notes") or "").strip()
     db.add(
         TicketComment(
@@ -200,11 +211,11 @@ def approve_city_escalation(
             user_id=current_user.id,
             comment_text=note or "City admin acknowledged escalation and started review.",
             comment_type="escalation_approval",
-            extra_data={"escalation_id": esc.id, "approved": True},
+            extra_data={"escalation_id": escalation_id, "approved": True},
         )
     )
     db.commit()
-    return {"message": "Escalation approved", "escalation_id": esc.id, "status": esc.status.value}
+    return {"message": "Escalation approved", "escalation_id": escalation_id, "status": "acknowledged"}
 
 
 @router.post("/tickets/{ticket_id}/force-close")
