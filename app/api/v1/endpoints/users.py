@@ -341,9 +341,9 @@ def update_my_location(
 @router.get("/", response_model=List[UserResponse])
 def list_users(
     role: UserRole = None,
-    organization_id: int = None,
-    state_id: int = None,
-    city_id: int = None,
+    organization_id: Optional[str] = None,
+    state_id: Optional[str] = None,
+    city_id: Optional[str] = None,
     current_user: User = Depends(require_role([
         UserRole.ORGANIZATION_ADMIN,
         UserRole.PLATFORM_ADMIN,
@@ -354,16 +354,31 @@ def list_users(
     db: Session = Depends(get_db)
 ):
     """List users based on permissions and hierarchy (org → country → state → city)."""
+    def _parse_optional_int(value: Optional[str], field_name: str) -> Optional[int]:
+        if value is None:
+            return None
+        s = str(value).strip().lower()
+        if s in ("", "null", "none", "undefined"):
+            return None
+        try:
+            return int(s)
+        except ValueError:
+            raise HTTPException(status_code=422, detail=f"{field_name} must be an integer")
+
+    organization_id_int = _parse_optional_int(organization_id, "organization_id")
+    state_id_int = _parse_optional_int(state_id, "state_id")
+    city_id_int = _parse_optional_int(city_id, "city_id")
+
     query = apply_user_query_scope(db.query(User), current_user)
 
     if role:
         query = query.filter(User.role == role)
-    if organization_id:
-        query = query.filter(User.organization_id == organization_id)
-    if state_id:
-        query = query.filter(User.state_id == state_id)
-    if city_id:
-        query = query.filter(User.city_id == city_id)
+    if organization_id_int is not None:
+        query = query.filter(User.organization_id == organization_id_int)
+    if state_id_int is not None:
+        query = query.filter(User.state_id == state_id_int)
+    if city_id_int is not None:
+        query = query.filter(User.city_id == city_id_int)
     
     users = query.all()
     return users
