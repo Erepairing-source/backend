@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Body, File, Uploa
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func
 from typing import List, Optional
 
 import pandas as pd
