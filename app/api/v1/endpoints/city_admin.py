@@ -26,6 +26,26 @@ router = APIRouter()
 anomaly_service = AnomalyDetectionService()
 
 
+def _enum_or_str_lower(value) -> str:
+    if value is None:
+        return ""
+    if hasattr(value, "value"):
+        return str(value.value).strip().lower()
+    return str(value).strip().lower()
+
+
+def _is_completion_otp_escalation(esc: Escalation) -> bool:
+    extra = esc.extra_data if isinstance(esc.extra_data, dict) else {}
+    subtype = str(extra.get("subtype") or "").strip().lower()
+    esc_type = _enum_or_str_lower(getattr(esc, "escalation_type", None))
+    reason = str(getattr(esc, "reason", "") or "").strip().lower()
+    return (
+        subtype == "completion_otp_not_provided"
+        or esc_type == "completion_otp_not_provided"
+        or ("completion otp" in reason and "not provide" in reason)
+    )
+
+
 def _days_from_time_range_city(time_range: str) -> int:
     key = (time_range or "30d").strip().lower()
     return {"7d": 7, "30d": 30, "90d": 90, "1y": 365}.get(key, 30)
@@ -262,10 +282,9 @@ def city_admin_force_close_ticket(
     if not esc:
         raise HTTPException(status_code=400, detail="No active escalation found for this ticket")
 
-    esc_extra = esc.extra_data if isinstance(esc.extra_data, dict) else {}
-    if esc_extra.get("subtype") != "completion_otp_not_provided":
+    if not _is_completion_otp_escalation(esc):
         raise HTTPException(status_code=400, detail="Force close is only allowed for completion OTP escalations")
-    if esc.status != EscalationStatus.ACKNOWLEDGED:
+    if _enum_or_str_lower(esc.status) != "acknowledged":
         raise HTTPException(status_code=400, detail="Escalation must be approved by city admin before force close")
 
     suffix = "\n\n[Closed by City Admin — completion OTP not required]"
