@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, and_, or_, text
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
+import json
 
 from app.core.database import get_db
 from app.core.permissions import require_role
@@ -44,6 +45,18 @@ def _is_completion_otp_escalation(esc: Escalation) -> bool:
         or esc_type == "completion_otp_not_provided"
         or ("completion otp" in reason and "not provide" in reason)
     )
+
+
+def _as_extra_dict(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
 
 
 def _days_from_time_range_city(time_range: str) -> int:
@@ -127,17 +140,22 @@ def list_city_escalations(
         out = []
         for e in rows:
             t = db.query(Ticket).filter(Ticket.id == e.ticket_id).first()
-            extra = e.extra_data if isinstance(e.extra_data, dict) else {}
+            extra = _as_extra_dict(e.extra_data)
+            is_otp = _is_completion_otp_escalation(e)
+            status_s = _enum_or_str(e.status)
+            can_force_close = bool(is_otp and str(status_s or "").strip().lower() == "acknowledged")
             out.append(
                 {
                     "id": e.id,
                     "ticket_id": e.ticket_id,
                     "ticket_number": t.ticket_number if t else None,
-                    "status": _enum_or_str(e.status),
+                    "status": status_s,
                     "escalation_type": _enum_or_str(e.escalation_type),
                     "escalation_level": _enum_or_str(e.escalation_level),
                     "reason": e.reason,
                     "extra_data": extra,
+                    "is_completion_otp": is_otp,
+                    "can_force_close": can_force_close,
                     "created_at": e.created_at.isoformat() if e.created_at else None,
                 }
             )
@@ -166,8 +184,18 @@ def list_city_escalations(
         ).mappings().all()
         out = []
         for r in rows:
-            extra = r.get("extra_data") if isinstance(r.get("extra_data"), dict) else {}
+            extra = _as_extra_dict(r.get("extra_data"))
             created = r.get("created_at")
+            status_s = r.get("status")
+            esc_type_s = str(r.get("escalation_type") or "").strip().lower()
+            reason_s = str(r.get("reason") or "").strip().lower()
+            subtype_s = str(extra.get("subtype") or "").strip().lower()
+            is_otp = (
+                subtype_s == "completion_otp_not_provided"
+                or esc_type_s == "completion_otp_not_provided"
+                or ("completion otp" in reason_s and "not provide" in reason_s)
+            )
+            can_force_close = bool(is_otp and str(status_s or "").strip().lower() == "acknowledged")
             out.append(
                 {
                     "id": r.get("id"),
@@ -178,6 +206,8 @@ def list_city_escalations(
                     "escalation_level": r.get("escalation_level"),
                     "reason": r.get("reason"),
                     "extra_data": extra,
+                    "is_completion_otp": is_otp,
+                    "can_force_close": can_force_close,
                     "created_at": created.isoformat() if hasattr(created, "isoformat") else None,
                 }
             )
