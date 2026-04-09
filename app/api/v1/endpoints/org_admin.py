@@ -43,6 +43,22 @@ router = APIRouter()
 route_optimizer = RouteOptimizationService()
 
 
+def _org_labour_charges(org: Organization) -> dict:
+    wp = org.warranty_policy if isinstance(org.warranty_policy, dict) else {}
+    lc = wp.get("fixed_labour_charges") if isinstance(wp.get("fixed_labour_charges"), dict) else {}
+    in_w = lc.get("in_warranty", 0)
+    off_w = lc.get("off_warranty", 300)
+    try:
+        in_w = max(0, float(in_w))
+    except Exception:
+        in_w = 0
+    try:
+        off_w = max(0, float(off_w))
+    except Exception:
+        off_w = 300
+    return {"in_warranty": in_w, "off_warranty": off_w}
+
+
 @router.get("/dashboard")
 def get_org_admin_dashboard(
     current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
@@ -135,6 +151,7 @@ def get_org_admin_dashboard(
                 "country_name": org.country.name if org.country else None,
                 "state_name": org.state.name if org.state else None,
                 "city_name": org.city.name if org.city else None,
+                "fixed_labour_charges": _org_labour_charges(org),
             },
             "stats": {
                 "total_tickets": total_tickets,
@@ -247,8 +264,44 @@ def update_my_organization(
             "country_name": org.country.name if org.country else None,
             "state_name": org.state.name if org.state else None,
             "city_name": org.city.name if org.city else None,
+            "fixed_labour_charges": _org_labour_charges(org),
         },
     }
+
+
+@router.put("/labour-charges")
+def update_org_labour_charges(
+    body: dict = Body(...),
+    current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
+    db: Session = Depends(get_db),
+):
+    """Set fixed labour charges for in/out warranty estimates."""
+    if not current_user.organization_id:
+        raise HTTPException(status_code=400, detail="User must be associated with an organization")
+
+    org = db.query(Organization).filter(Organization.id == current_user.organization_id).first()
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    def _num(name: str, default: float) -> float:
+        raw = body.get(name, default)
+        try:
+            v = float(raw)
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"{name} must be a number")
+        if v < 0:
+            raise HTTPException(status_code=400, detail=f"{name} must be >= 0")
+        return v
+
+    in_w = _num("in_warranty", 0)
+    off_w = _num("off_warranty", 300)
+
+    wp = org.warranty_policy if isinstance(org.warranty_policy, dict) else {}
+    wp["fixed_labour_charges"] = {"in_warranty": in_w, "off_warranty": off_w}
+    org.warranty_policy = wp
+    db.commit()
+
+    return {"message": "Labour charges updated", "fixed_labour_charges": {"in_warranty": in_w, "off_warranty": off_w}}
 
 
 # Product Catalog Management

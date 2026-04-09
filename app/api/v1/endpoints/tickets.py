@@ -34,6 +34,7 @@ from app.models.ticket_start_approval import TicketStartApproval
 from app.models.device import Device
 from app.models.inventory import Part
 from app.models.product import Product
+from app.models.organization import Organization
 from app.models.escalation import Escalation, EscalationLevel, EscalationType
 from app.models.notification import Notification, NotificationType, NotificationChannel, NotificationStatus
 from app.services.ai.sentiment_analyzer import SentimentAnalyzerService
@@ -625,10 +626,31 @@ def get_ticket_estimate(
     """Estimate cost based on suggested parts and warranty"""
     ticket = _ticket_or_404(db, ticket_id, current_user)
 
-    if ticket.warranty_status == "in_warranty" and not ticket.is_chargeable:
-        return {"total_estimate": 0, "parts": [], "labour": 0, "note": "Covered under warranty"}
+    org = None
+    if ticket.organization_id:
+        org = db.query(Organization).filter(Organization.id == ticket.organization_id).first()
+    wp = org.warranty_policy if (org and isinstance(org.warranty_policy, dict)) else {}
+    lc = wp.get("fixed_labour_charges") if isinstance(wp.get("fixed_labour_charges"), dict) else {}
+    in_warranty_labour = lc.get("in_warranty", 0)
+    off_warranty_labour = lc.get("off_warranty", 300)
+    try:
+        in_warranty_labour = max(0, float(in_warranty_labour))
+    except Exception:
+        in_warranty_labour = 0
+    try:
+        off_warranty_labour = max(0, float(off_warranty_labour))
+    except Exception:
+        off_warranty_labour = 300
 
-    labour_cost = 300
+    if ticket.warranty_status == "in_warranty" and not ticket.is_chargeable:
+        return {
+            "total_estimate": in_warranty_labour,
+            "parts": [],
+            "labour": in_warranty_labour,
+            "note": "In warranty: parts covered; labour as per organization fixed charge",
+        }
+
+    labour_cost = in_warranty_labour if ticket.warranty_status == "in_warranty" else off_warranty_labour
     part_ids = []
     for item in ticket.ai_suggested_parts or []:
         if isinstance(item, dict) and item.get("part_id"):
@@ -652,7 +674,7 @@ def get_ticket_estimate(
         "total_estimate": total,
         "parts": parts_breakdown,
         "labour": labour_cost,
-        "note": "Estimated based on suggested parts"
+        "note": "Estimated based on suggested parts and organization labour charges",
     }
 
 
