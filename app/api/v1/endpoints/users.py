@@ -354,6 +354,7 @@ def list_users(
         UserRole.CITY_ADMIN,
         UserRole.STATE_ADMIN,
         UserRole.COUNTRY_ADMIN,
+        UserRole.SUPPORT_AGENT,
     ])),
     db: Session = Depends(get_db)
 ):

@@ -14,7 +14,7 @@ import uuid
 from app.core.database import get_db
 from app.core.location_scope import device_query_for_user, get_device_if_accessible
 from app.core.permissions import get_current_user
-from app.models.user import User
+from app.models.user import User, UserRole
 from app.models.device import Device, DeviceRegistration
 from app.models.warranty import Warranty, WarrantyStatus
 from datetime import datetime, timezone
@@ -308,11 +308,39 @@ def register_device_with_files(
 
 @router.get("/")
 def list_devices(
+    customer_id: Optional[int] = None,
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """List devices visible to the current user (role-scoped)."""
-    devices = device_query_for_user(db, current_user).all()
+    """List devices visible to the current user (role-scoped).
+
+    Support agents may pass ``customer_id`` to list that customer's devices within the same organization.
+    """
+    query = device_query_for_user(db, current_user)
+    if customer_id is not None:
+        if current_user.role != UserRole.SUPPORT_AGENT:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only support agents may filter devices by customer_id.",
+            )
+        if not current_user.organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Your account is not linked to an organization.",
+            )
+        cust = (
+            db.query(User)
+            .filter(
+                User.id == customer_id,
+                User.role == UserRole.CUSTOMER,
+                User.organization_id == current_user.organization_id,
+            )
+            .first()
+        )
+        if not cust:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found in your organization.")
+        query = query.filter(Device.customer_id == customer_id)
+    devices = query.all()
     
     result = []
     for device in devices:
