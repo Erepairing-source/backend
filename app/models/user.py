@@ -32,8 +32,16 @@ class User(Base):
     password_hash = Column(String(255), nullable=False)
     full_name = Column(String(255), nullable=False)
     
-    # Role and organization
-    role = Column(Enum(UserRole), nullable=False, index=True)
+    # Role and organization (values_callable: MySQL userrole ENUM uses .value strings, not member names)
+    role = Column(
+        Enum(
+            UserRole,
+            name="userrole",
+            values_callable=lambda obj: [m.value for m in obj],
+        ),
+        nullable=False,
+        index=True,
+    )
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=True, index=True)
     
     # Location hierarchy
