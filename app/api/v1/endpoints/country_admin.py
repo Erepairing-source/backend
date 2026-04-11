@@ -1,13 +1,15 @@
 """
 Country Admin endpoints
 """
+import json
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from typing import Optional
 
 from app.core.database import get_db
 from app.core.permissions import require_role
-from sqlalchemy import func
+from sqlalchemy import func, text
 from datetime import datetime, timedelta, timezone
 
 from app.models.user import User, UserRole
@@ -39,6 +41,18 @@ def _get_org_ids(current_user: User, db: Session) -> List[int]:
 
 
 router = APIRouter()
+
+
+def _as_extra_dict_esc(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
 
 
 def _days_from_time_range(time_range: str) -> int:
@@ -102,6 +116,78 @@ def get_country_admin_analytics(
         "status_distribution": status_distribution,
         "priority_distribution": priority_distribution,
     }
+
+
+@router.get("/escalations")
+def list_country_escalations(
+    status_filter: Optional[str] = None,
+    state_id: Optional[int] = None,
+    current_user: User = Depends(require_role([UserRole.COUNTRY_ADMIN])),
+    db: Session = Depends(get_db),
+):
+    """Escalations for tickets in this country (oversight; operational resolution stays with city admin)."""
+    if not current_user.country_id:
+        raise HTTPException(status_code=400, detail="User must be assigned to a country")
+
+    if state_id is not None:
+        st = db.query(State).filter(State.id == state_id).first()
+        if not st or st.country_id != current_user.country_id:
+            raise HTTPException(status_code=400, detail="state_id is not in your country")
+
+    org_ids = _get_org_ids(current_user, db)
+    org_clause = ""
+    if org_ids:
+        org_clause = " AND t.organization_id IN (" + ",".join(str(int(x)) for x in org_ids) + ") "
+
+    sql = f"""
+        SELECT e.id, e.ticket_id, t.ticket_number, e.status, e.escalation_type, e.escalation_level,
+               e.reason, e.extra_data, e.created_at
+        FROM escalations e
+        JOIN tickets t ON t.id = e.ticket_id
+        WHERE t.country_id = :country_id
+          {org_clause}
+          AND (:state_id IS NULL OR t.state_id = :state_id)
+          AND (:status_filter IS NULL OR e.status = :status_filter)
+          AND (:status_filter IS NOT NULL OR e.status IN ('pending', 'acknowledged'))
+        ORDER BY e.created_at DESC
+        LIMIT 500
+    """
+    rows = db.execute(
+        text(sql),
+        {
+            "country_id": current_user.country_id,
+            "state_id": state_id,
+            "status_filter": status_filter,
+        },
+    ).mappings().all()
+    out = []
+    for r in rows:
+        extra = _as_extra_dict_esc(r.get("extra_data"))
+        created = r.get("created_at")
+        esc_type_s = str(r.get("escalation_type") or "").strip().lower()
+        reason_s = str(r.get("reason") or "").strip().lower()
+        subtype_s = str(extra.get("subtype") or "").strip().lower()
+        is_otp = (
+            subtype_s == "completion_otp_not_provided"
+            or esc_type_s == "completion_otp_not_provided"
+            or ("completion otp" in reason_s and "not provide" in reason_s)
+        )
+        out.append(
+            {
+                "id": r.get("id"),
+                "ticket_id": r.get("ticket_id"),
+                "ticket_number": r.get("ticket_number"),
+                "status": r.get("status"),
+                "escalation_type": r.get("escalation_type"),
+                "escalation_level": r.get("escalation_level"),
+                "reason": r.get("reason"),
+                "extra_data": extra,
+                "is_completion_otp": is_otp,
+                "can_force_close": False,
+                "created_at": created.isoformat() if hasattr(created, "isoformat") else None,
+            }
+        )
+    return out
 
 
 @router.get("/dashboard")

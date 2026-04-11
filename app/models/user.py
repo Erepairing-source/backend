@@ -13,6 +13,7 @@ class UserRole(str, enum.Enum):
     """User role types"""
     CUSTOMER = "customer"
     SUPPORT_ENGINEER = "support_engineer"
+    SUPPORT_AGENT = "support_agent"  # Org helpdesk: create tickets for customers (same org), no per-user quota
     CITY_ADMIN = "city_admin"
     STATE_ADMIN = "state_admin"
     COUNTRY_ADMIN = "country_admin"

@@ -8,6 +8,7 @@ Hierarchy (same org when set, then location):
   State admin → organization + state
   City admin / engineer → organization + city (engineer: city or assigned on tickets only)
   Customer → self only (users/devices); own tickets
+  Support agent → same organization as org admin (tickets/devices in org; list users in org)
   Vendor → organizations linked to vendor (tickets/devices); not user listing
 """
 from __future__ import annotations
@@ -44,6 +45,14 @@ def apply_user_query_scope(query: Query, current_user: User) -> Query:
         return query
 
     if rv == UserRole.ORGANIZATION_ADMIN.value:
+        if not current_user.organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Your account is not linked to an organization. Contact support.",
+            )
+        return query.filter(User.organization_id == current_user.organization_id)
+
+    if rv == UserRole.SUPPORT_AGENT.value:
         if not current_user.organization_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -112,6 +121,11 @@ def apply_ticket_query_scope(
         return query.filter(Ticket.organization_id.in_(org_ids))
 
     if rv == UserRole.ORGANIZATION_ADMIN.value:
+        if not oid:
+            return query.filter(False)
+        return query.filter(Ticket.organization_id == oid)
+
+    if rv == UserRole.SUPPORT_AGENT.value:
         if not oid:
             return query.filter(False)
         return query.filter(Ticket.organization_id == oid)
@@ -212,6 +226,9 @@ def device_query_for_user(db: Session, current_user: User) -> Query:
     )
 
     if rv == UserRole.ORGANIZATION_ADMIN.value:
+        return base
+
+    if rv == UserRole.SUPPORT_AGENT.value:
         return base
 
     if rv == UserRole.COUNTRY_ADMIN.value:

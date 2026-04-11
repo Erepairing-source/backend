@@ -62,6 +62,24 @@ ROLE_GUIDES: Dict[str, Dict[str, Any]] = {
             {"title": "Live Location", "path": "/engineer/ticket/[id]", "keywords": ["location", "share", "track"]}
         ]
     },
+    UserRole.SUPPORT_AGENT.value: {
+        "role_name": "Support Agent",
+        "overview": "You raise service tickets on behalf of customers in your organization with the same fields customers use; tickets follow the customer’s location in the hierarchy.",
+        "access": [
+            "Create tickets for org customers (device + issue + visit preferences)",
+            "View all organization tickets",
+            "List customers and devices in your org"
+        ],
+        "ai_features": [
+            "AI issue triage during ticket creation",
+            "Same estimate and routing as customer-created tickets"
+        ],
+        "sections": [
+            {"title": "Support Home", "path": "/support-agent/dashboard", "keywords": ["dashboard", "home"]},
+            {"title": "Create Ticket", "path": "/support-agent/create-ticket", "keywords": ["create", "ticket", "customer"]},
+            {"title": "Open Ticket", "path": "/tickets/[id]", "keywords": ["ticket", "details"]}
+        ]
+    },
     UserRole.CITY_ADMIN.value: {
         "role_name": "City Admin",
         "overview": "You manage city tickets, engineers, customer feedback, and inventory.",
@@ -99,6 +117,7 @@ ROLE_GUIDES: Dict[str, Dict[str, Any]] = {
         ],
         "sections": [
             {"title": "State Dashboard", "path": "/state-admin/dashboard", "keywords": ["dashboard", "state", "risk"]},
+            {"title": "Tickets & Escalations", "path": "/state-admin/tickets", "keywords": ["tickets", "escalation", "queue"]},
             {"title": "City Drilldown", "path": "/state-admin/city/[id]", "keywords": ["city", "drill", "details"]},
             {"title": "SLA Policies", "path": "/state-admin/policies", "keywords": ["policy", "sla"]},
             {"title": "Compliance Alerts", "path": "/state-admin/dashboard", "keywords": ["compliance", "alerts"]}
@@ -120,6 +139,7 @@ ROLE_GUIDES: Dict[str, Dict[str, Any]] = {
         ],
         "sections": [
             {"title": "National Dashboard", "path": "/country-admin/dashboard", "keywords": ["dashboard", "national", "kpi"]},
+            {"title": "Tickets & Escalations", "path": "/country-admin/tickets", "keywords": ["tickets", "escalation", "queue"]},
             {"title": "State Overview", "path": "/country-admin/dashboard", "keywords": ["state", "overview"]},
             {"title": "Warranty Signals", "path": "/country-admin/dashboard", "keywords": ["warranty", "abuse"]},
             {"title": "Partners", "path": "/country-admin/dashboard", "keywords": ["partner", "performance"]}
@@ -358,6 +378,17 @@ class RoleAssistantService:
             metrics["assigned_tickets"] = q.count()
             metrics["in_progress_tickets"] = q.filter(Ticket.status == TicketStatus.IN_PROGRESS).count()
             metrics["waiting_parts_tickets"] = q.filter(Ticket.status == TicketStatus.WAITING_PARTS).count()
+
+        elif role == UserRole.SUPPORT_AGENT.value and user.organization_id:
+            q = base_ticket_q.filter(Ticket.organization_id == user.organization_id)
+            metrics["total_tickets"] = q.count()
+            metrics["open_tickets"] = q.filter(Ticket.status.in_([TicketStatus.CREATED, TicketStatus.ASSIGNED, TicketStatus.IN_PROGRESS, TicketStatus.WAITING_PARTS])).count()
+            metrics["resolved_tickets"] = q.filter(Ticket.status.in_([TicketStatus.RESOLVED, TicketStatus.CLOSED])).count()
+            metrics["customers_in_org"] = db.query(User).filter(
+                User.organization_id == user.organization_id,
+                User.role == UserRole.CUSTOMER,
+                User.is_active == True,
+            ).count()
 
         elif role in {UserRole.CITY_ADMIN.value, UserRole.STATE_ADMIN.value, UserRole.COUNTRY_ADMIN.value, UserRole.ORGANIZATION_ADMIN.value}:
             q = base_ticket_q

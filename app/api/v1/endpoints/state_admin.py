@@ -1,13 +1,15 @@
 """
 State Admin endpoints
 """
+import json
+
 from fastapi import APIRouter, Depends, HTTPException, Body
 from sqlalchemy.orm import Session
 from typing import Optional, List
 
 from app.core.database import get_db
 from app.core.permissions import require_role
-from sqlalchemy import func
+from sqlalchemy import func, text
 from datetime import datetime, timedelta, timezone
 
 from app.models.user import User, UserRole
@@ -119,6 +121,86 @@ def pick_available_engineer_state(db: Session, state_id: int, city_id: Optional[
         .all()
     )
     return min(engineers, key=lambda e: counts.get(e.id, 0))
+
+
+def _as_extra_dict_esc(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+@router.get("/escalations")
+def list_state_escalations(
+    status_filter: Optional[str] = None,
+    city_id: Optional[int] = None,
+    current_user: User = Depends(require_role([UserRole.STATE_ADMIN])),
+    db: Session = Depends(get_db),
+):
+    """Escalations for tickets in this state (read-only oversight; city admin handles OTP force-close)."""
+    if not current_user.state_id:
+        raise HTTPException(status_code=400, detail="User must be assigned to a state")
+
+    if city_id is not None:
+        city = db.query(City).filter(City.id == city_id).first()
+        if not city or city.state_id != current_user.state_id:
+            raise HTTPException(status_code=400, detail="city_id is not in your state")
+
+    sql = """
+        SELECT e.id, e.ticket_id, t.ticket_number, e.status, e.escalation_type, e.escalation_level,
+               e.reason, e.extra_data, e.created_at
+        FROM escalations e
+        JOIN tickets t ON t.id = e.ticket_id
+        WHERE t.state_id = :state_id
+          AND (:org_id IS NULL OR t.organization_id = :org_id)
+          AND (:city_id IS NULL OR t.city_id = :city_id)
+          AND (:status_filter IS NULL OR e.status = :status_filter)
+          AND (:status_filter IS NOT NULL OR e.status IN ('pending', 'acknowledged'))
+        ORDER BY e.created_at DESC
+        LIMIT 500
+    """
+    rows = db.execute(
+        text(sql),
+        {
+            "state_id": current_user.state_id,
+            "org_id": current_user.organization_id,
+            "city_id": city_id,
+            "status_filter": status_filter,
+        },
+    ).mappings().all()
+    out = []
+    for r in rows:
+        extra = _as_extra_dict_esc(r.get("extra_data"))
+        created = r.get("created_at")
+        esc_type_s = str(r.get("escalation_type") or "").strip().lower()
+        reason_s = str(r.get("reason") or "").strip().lower()
+        subtype_s = str(extra.get("subtype") or "").strip().lower()
+        is_otp = (
+            subtype_s == "completion_otp_not_provided"
+            or esc_type_s == "completion_otp_not_provided"
+            or ("completion otp" in reason_s and "not provide" in reason_s)
+        )
+        out.append(
+            {
+                "id": r.get("id"),
+                "ticket_id": r.get("ticket_id"),
+                "ticket_number": r.get("ticket_number"),
+                "status": r.get("status"),
+                "escalation_type": r.get("escalation_type"),
+                "escalation_level": r.get("escalation_level"),
+                "reason": r.get("reason"),
+                "extra_data": extra,
+                "is_completion_otp": is_otp,
+                "can_force_close": False,
+                "created_at": created.isoformat() if hasattr(created, "isoformat") else None,
+            }
+        )
+    return out
 
 
 @router.get("/dashboard")

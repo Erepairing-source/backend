@@ -238,6 +238,7 @@ async def create_ticket(
     serial_clean = (str(device_serial).strip() if device_serial is not None else "") or None
 
     device = None
+    ticket_customer: Optional[User] = None
     if current_user.role == UserRole.CUSTOMER:
         if parsed_device_id is not None:
             device = (
@@ -271,6 +272,66 @@ async def create_ticket(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Please select a registered device for this service request.",
+            )
+    elif current_user.role == UserRole.SUPPORT_AGENT:
+        if not current_user.organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Support account must be linked to an organization to raise tickets.",
+            )
+        raw_cid = ticket_data.get("customer_id")
+        if raw_cid is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="customer_id is required when creating a ticket as support staff.",
+            )
+        try:
+            cid_int = int(raw_cid)
+        except (TypeError, ValueError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="customer_id must be a valid integer.",
+            )
+        ticket_customer = db.query(User).filter(User.id == cid_int).first()
+        if not ticket_customer or ticket_customer.role != UserRole.CUSTOMER:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found.")
+        if ticket_customer.organization_id != current_user.organization_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You can only create tickets for customers in your organization.",
+            )
+        if parsed_device_id is not None:
+            device = (
+                db.query(Device)
+                .filter(
+                    Device.id == parsed_device_id,
+                    Device.customer_id == ticket_customer.id,
+                )
+                .first()
+            )
+            if not device:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Device not found for this customer.",
+                )
+        elif serial_clean:
+            device = (
+                db.query(Device)
+                .filter(
+                    Device.serial_number == serial_clean,
+                    Device.customer_id == ticket_customer.id,
+                )
+                .first()
+            )
+            if not device:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Device not found for this customer serial number.",
+                )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Please select a registered device for this customer.",
             )
     else:
         if parsed_device_id is not None:
@@ -332,15 +393,31 @@ async def create_ticket(
     except ValueError:
         priority_enum = TicketPriority.MEDIUM
 
+    if current_user.role == UserRole.CUSTOMER:
+        ticket_customer_id = current_user.id
+        ticket_country_id = current_user.country_id
+        ticket_state_id = current_user.state_id
+        ticket_city_id = current_user.city_id
+    elif current_user.role == UserRole.SUPPORT_AGENT and ticket_customer is not None:
+        ticket_customer_id = ticket_customer.id
+        ticket_country_id = ticket_customer.country_id
+        ticket_state_id = ticket_customer.state_id
+        ticket_city_id = ticket_customer.city_id
+    else:
+        ticket_customer_id = None
+        ticket_country_id = current_user.country_id
+        ticket_state_id = current_user.state_id
+        ticket_city_id = current_user.city_id
+
     ticket = Ticket(
         ticket_number=ticket_number,
         organization_id=organization_id,
-        customer_id=current_user.id if current_user.role == UserRole.CUSTOMER else None,
+        customer_id=ticket_customer_id,
         device_id=device.id if device else None,
         created_by_id=current_user.id,
-        country_id=current_user.country_id,
-        state_id=current_user.state_id,
-        city_id=current_user.city_id,
+        country_id=ticket_country_id,
+        state_id=ticket_state_id,
+        city_id=ticket_city_id,
         issue_description=issue_description,
         issue_photos=issue_photos or [],
         issue_language=issue_language,
