@@ -69,6 +69,15 @@ def _normalize_service_coord(v) -> Optional[str]:
     return s[:20]
 
 
+def _clean_text(v, *, max_length: Optional[int] = None) -> str:
+    if v is None:
+        return ""
+    s = str(v).strip()
+    if max_length is not None:
+        return s[:max_length]
+    return s
+
+
 def _ticket_customer_portal_url(ticket_id: int) -> str:
     return f"{frontend_base_url()}/customer/ticket/{ticket_id}"
 
@@ -219,20 +228,23 @@ async def create_ticket(
     db: Session = Depends(get_db)
 ):
     """Create a new ticket"""
-    issue_description = ticket_data.get("issue_description")
+    issue_description = _clean_text(ticket_data.get("issue_description"))
     device_id = ticket_data.get("device_id")
     device_serial = ticket_data.get("device_serial")
     issue_photos = ticket_data.get("issue_photos") or []
-    service_address = ticket_data.get("service_address") or ""
+    service_address = _clean_text(ticket_data.get("service_address"))
     service_latitude = ticket_data.get("service_latitude")
     service_longitude = ticket_data.get("service_longitude")
     priority = ticket_data.get("priority") or TicketPriority.MEDIUM
     issue_language = ticket_data.get("issue_language")
     contact_preferences = ticket_data.get("contact_preferences") or []
     preferred_time_slots = ticket_data.get("preferred_time_slots") or []
-
-    if not issue_description:
-        raise HTTPException(status_code=400, detail="Issue description is required")
+    customer_name = _clean_text(ticket_data.get("customer_name") or ticket_data.get("name"), max_length=255)
+    customer_company = _clean_text(ticket_data.get("customer_company") or ticket_data.get("company"), max_length=255)
+    customer_phone = _clean_text(
+        ticket_data.get("customer_phone") or ticket_data.get("phone") or ticket_data.get("number"),
+        max_length=20,
+    )
 
     parsed_device_id = _parse_ticket_device_id(device_id)
     serial_clean = (str(device_serial).strip() if device_serial is not None else "") or None
@@ -268,11 +280,6 @@ async def create_ticket(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Device not found. Register your device first or select it from your list.",
                 )
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Please select a registered device for this service request.",
-            )
     elif current_user.role == UserRole.SUPPORT_AGENT:
         if not current_user.organization_id:
             raise HTTPException(
@@ -280,27 +287,28 @@ async def create_ticket(
                 detail="Support account must be linked to an organization to raise tickets.",
             )
         raw_cid = ticket_data.get("customer_id")
-        if raw_cid is None:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="customer_id is required when creating a ticket as support staff.",
-            )
-        try:
-            cid_int = int(raw_cid)
-        except (TypeError, ValueError):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="customer_id must be a valid integer.",
-            )
-        ticket_customer = db.query(User).filter(User.id == cid_int).first()
-        if not ticket_customer or ticket_customer.role != UserRole.CUSTOMER:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found.")
-        if ticket_customer.organization_id != current_user.organization_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You can only create tickets for customers in your organization.",
-            )
+        if raw_cid not in (None, ""):
+            try:
+                cid_int = int(raw_cid)
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="customer_id must be a valid integer.",
+                )
+            ticket_customer = db.query(User).filter(User.id == cid_int).first()
+            if not ticket_customer or ticket_customer.role != UserRole.CUSTOMER:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Customer not found.")
+            if ticket_customer.organization_id != current_user.organization_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="You can only create tickets for customers in your organization.",
+                )
         if parsed_device_id is not None:
+            if not ticket_customer:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Select a customer before selecting one of their registered devices.",
+                )
             device = (
                 db.query(Device)
                 .filter(
@@ -315,6 +323,11 @@ async def create_ticket(
                     detail="Device not found for this customer.",
                 )
         elif serial_clean:
+            if not ticket_customer:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Select a customer before entering one of their registered device serial numbers.",
+                )
             device = (
                 db.query(Device)
                 .filter(
@@ -328,11 +341,6 @@ async def create_ticket(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Device not found for this customer serial number.",
                 )
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Please select a registered device for this customer.",
-            )
     else:
         if parsed_device_id is not None:
             device = get_device_if_accessible(db, parsed_device_id, current_user)
@@ -366,6 +374,30 @@ async def create_ticket(
                 "No organization could be determined for this ticket. "
                 "Ensure your account is linked to your manufacturer or service provider."
             ),
+        )
+
+    if ticket_customer:
+        customer_name = customer_name or _clean_text(ticket_customer.full_name, max_length=255)
+        customer_phone = customer_phone or _clean_text(ticket_customer.phone, max_length=20)
+        if ticket_customer.organization:
+            customer_company = customer_company or _clean_text(ticket_customer.organization.name, max_length=255)
+    if current_user.role == UserRole.CUSTOMER:
+        customer_name = customer_name or _clean_text(current_user.full_name, max_length=255)
+        customer_phone = customer_phone or _clean_text(current_user.phone, max_length=20)
+    if current_user.organization:
+        customer_company = customer_company or _clean_text(current_user.organization.name, max_length=255)
+
+    missing_contact_fields = []
+    if not customer_name:
+        missing_contact_fields.append("name")
+    if not customer_company:
+        missing_contact_fields.append("company")
+    if not customer_phone:
+        missing_contact_fields.append("number")
+    if missing_contact_fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Customer {', '.join(missing_contact_fields)} required.",
         )
 
     service_latitude = _normalize_service_coord(service_latitude)
@@ -414,6 +446,9 @@ async def create_ticket(
         organization_id=organization_id,
         customer_id=ticket_customer_id,
         device_id=device.id if device else None,
+        customer_name=customer_name,
+        customer_company=customer_company,
+        customer_phone=customer_phone,
         created_by_id=current_user.id,
         country_id=ticket_country_id,
         state_id=ticket_state_id,
@@ -550,7 +585,9 @@ def list_tickets(
             "parent_ticket_id": t.parent_ticket_id,
             "follow_up_preferred_date": t.follow_up_preferred_date.isoformat() if t.follow_up_preferred_date else None,
             "sla_deadline": t.sla_deadline.isoformat() if t.sla_deadline else None,
-            "customer_name": t.customer.full_name if t.customer else None,
+            "customer_name": t.customer_name or (t.customer.full_name if t.customer else None),
+            "customer_company": t.customer_company,
+            "customer_phone": t.customer_phone or (t.customer.phone if t.customer else None),
             "parts_ready": t.status != TicketStatus.WAITING_PARTS
         }
         for t in tickets
@@ -614,6 +651,9 @@ async def get_ticket(
         "service_address": ticket.service_address,
         "service_latitude": ticket.service_latitude,
         "service_longitude": ticket.service_longitude,
+        "customer_name": ticket.customer_name or (ticket.customer.full_name if ticket.customer else None),
+        "customer_company": ticket.customer_company,
+        "customer_phone": ticket.customer_phone or (ticket.customer.phone if ticket.customer else None),
         "customer": {
             "id": ticket.customer.id,
             "full_name": ticket.customer.full_name,

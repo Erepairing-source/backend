@@ -40,6 +40,9 @@ class Ticket(Base):
     organization_id = Column(Integer, ForeignKey("organizations.id"), nullable=False, index=True)
     customer_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)
     device_id = Column(Integer, ForeignKey("devices.id"), nullable=True, index=True)
+    customer_name = Column(String(255), nullable=True)
+    customer_company = Column(String(255), nullable=True)
+    customer_phone = Column(String(20), nullable=True)
     
     # Assignment
     assigned_engineer_id = Column(Integer, ForeignKey("users.id"), nullable=True, index=True)

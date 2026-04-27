@@ -8,9 +8,12 @@ from app.models.ticket import TicketStatus, TicketPriority
 
 
 class TicketBase(BaseModel):
-    issue_description: str
+    customer_name: str
+    customer_company: str
+    customer_phone: str
+    issue_description: Optional[str] = None
     device_id: Optional[int] = None
-    service_address: str
+    service_address: Optional[str] = None
     priority: Optional[TicketPriority] = TicketPriority.MEDIUM
 
 

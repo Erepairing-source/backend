@@ -233,8 +233,10 @@ def get_current_user(
         "id": user.id,
         "email": user.email,
         "full_name": user.full_name,
+        "phone": user.phone,
         "role": user.role.value,
         "organization_id": user.organization_id,
+        "organization_name": user.organization.name if user.organization else None,
         "is_verified": bool(user.is_verified),
     }
 
