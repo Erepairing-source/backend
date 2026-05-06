@@ -125,6 +125,11 @@ def apply_ticket_query_scope(
             return query.filter(False)
         return query.filter(Ticket.organization_id == oid)
 
+    if rv == UserRole.SUPPORT_AGENT.value:
+        if not oid:
+            return query.filter(False)
+        return query.filter(Ticket.organization_id == oid)
+
     if rv == UserRole.COUNTRY_ADMIN.value:
         if not current_user.country_id:
             return query.filter(False)
