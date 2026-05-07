@@ -47,6 +47,7 @@ class UserUpdate(BaseModel):
     engineer_specialization: Optional[List[str]] = None
     current_location_lat: Optional[str] = None
     current_location_lng: Optional[str] = None
+    address_pincode: Optional[str] = None
 
 
 class UserResponse(UserBase):
@@ -62,6 +63,7 @@ class UserResponse(UserBase):
     engineer_specialization: Optional[str] = None
     is_active: bool
     is_verified: bool
+    address_pincode: Optional[str] = None
     created_at: datetime
     
     class Config:

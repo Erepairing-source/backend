@@ -94,6 +94,8 @@ class Ticket(Base):
     parts_used = Column(JSON, default=list)  # Array of {part_id, quantity}
     customer_signature = Column(Text, nullable=True)  # Base64 or URL
     customer_otp_verified = Column(Boolean, default=False)
+    otp_start_verified_at = Column(DateTime(timezone=True), nullable=True)
+    otp_complete_verified_at = Column(DateTime(timezone=True), nullable=True)
     arrival_latitude = Column(String(20), nullable=True)
     arrival_longitude = Column(String(20), nullable=True)
     arrival_confirmed_at = Column(DateTime(timezone=True), nullable=True)

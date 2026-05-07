@@ -20,6 +20,7 @@ from app.models.location import City
 from app.models.notification import Notification, NotificationType, NotificationChannel, NotificationStatus
 from app.models.escalation import Escalation, EscalationStatus
 from app.services.ai.anomaly_detection import AnomalyDetectionService
+from app.services.ticket_numbering import allocate_er_ticket_number
 from app.core.email import send_ticket_resolved_email
 from app.core.config import frontend_base_url
 
@@ -768,7 +769,7 @@ def create_complaint_follow_up(
         follow_up_priority = ticket.priority
         if ticket.sla_breach_risk and ticket.sla_breach_risk > 0.7:
             follow_up_priority = TicketPriority.URGENT
-        new_ticket_number = f"TKT-{datetime.utcnow().strftime('%Y%m%d')}-{db.query(Ticket).count() + 1:06d}"
+        new_ticket_number = allocate_er_ticket_number(db)
         follow_up_ticket = Ticket(
             ticket_number=new_ticket_number,
             organization_id=ticket.organization_id,

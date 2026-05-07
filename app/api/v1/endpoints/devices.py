@@ -1,7 +1,8 @@
 """
 Device endpoints
 """
-from fastapi import APIRouter, Depends, HTTPException, status, Body, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, status, Body, UploadFile, File, Form, Query
+from sqlalchemy import or_
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from typing import Optional, List
@@ -12,11 +13,12 @@ import os
 import uuid
 
 from app.core.database import get_db
-from app.core.location_scope import device_query_for_user, get_device_if_accessible
+from app.core.location_scope import device_query_for_user, get_device_if_accessible, apply_ticket_query_scope
 from app.core.permissions import get_current_user
 from app.models.user import User, UserRole
 from app.models.device import Device, DeviceRegistration
 from app.models.warranty import Warranty, WarrantyStatus
+from app.models.ticket import Ticket
 from datetime import datetime, timezone
 try:
     import numpy as np
@@ -376,6 +378,82 @@ def list_devices(
         })
     
     return result
+
+
+@router.get("/service-profile/by-serial")
+def get_service_profile_by_serial(
+    serial: str = Query(..., min_length=2, max_length=120),
+    include_ticket_history: bool = Query(True),
+    limit: int = Query(30, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Device-centric profile for support: serial number resolves to device, owner, warranty,
+    and scoped ticket history on that device.
+    """
+    raw = serial.strip()
+    if not raw:
+        raise HTTPException(status_code=400, detail="serial is required")
+    device = (
+        device_query_for_user(db, current_user)
+        .filter(or_(Device.serial_number == raw, Device.serial_number == raw.upper()))
+        .first()
+    )
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found for this serial number in your scope")
+
+    active_warranty = db.query(Warranty).filter(
+        Warranty.device_id == device.id,
+        Warranty.status == WarrantyStatus.ACTIVE,
+        Warranty.end_date >= datetime.now(timezone.utc),
+    ).first()
+    if active_warranty:
+        warranty_status = "in_warranty"
+    else:
+        any_warranty = db.query(Warranty).filter(Warranty.device_id == device.id).first()
+        warranty_status = "out_of_warranty" if any_warranty else "unknown"
+
+    owner = db.query(User).filter(User.id == device.customer_id).first()
+
+    ticket_history = []
+    if include_ticket_history:
+        tq = (
+            apply_ticket_query_scope(db.query(Ticket), current_user, db)
+            .filter(Ticket.device_id == device.id)
+            .order_by(Ticket.created_at.desc())
+            .limit(limit)
+        )
+        for t in tq.all():
+            ticket_history.append({
+                "id": t.id,
+                "ticket_number": t.ticket_number,
+                "status": t.status.value if t.status else "",
+                "priority": t.priority.value if t.priority else "",
+                "created_at": t.created_at.isoformat() if t.created_at else None,
+            })
+
+    return {
+        "device": {
+            "id": device.id,
+            "serial_number": device.serial_number,
+            "brand": device.brand,
+            "model_number": device.model_number,
+            "product_category": device.product_category,
+            "customer_id": device.customer_id,
+            "warranty_status": warranty_status,
+            "purchase_date": device.purchase_date.isoformat() if device.purchase_date else None,
+        },
+        "customer": {
+            "id": owner.id,
+            "full_name": owner.full_name,
+            "email": owner.email,
+            "phone": owner.phone,
+            "address_pincode": getattr(owner, "address_pincode", None),
+            "organization_id": owner.organization_id,
+        } if owner else None,
+        "ticket_history": ticket_history,
+    }
 
 
 @router.get("/{device_id}")

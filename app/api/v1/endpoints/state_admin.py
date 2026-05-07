@@ -35,6 +35,7 @@ from app.models.inventory import Inventory, InventoryTransaction, Part
 from app.models.notification import Notification, NotificationType, NotificationChannel, NotificationStatus
 from app.models.sla_policy import SLAPolicy, ServicePolicy, coerce_sla_type, sla_type_to_api
 from app.services.ai.demand_forecasting import DemandForecastingService
+from app.services.ticket_numbering import allocate_er_ticket_number
 
 router = APIRouter()
 forecast_service = DemandForecastingService()
@@ -943,7 +944,7 @@ def create_state_complaint_follow_up(
         follow_up_priority = ticket.priority
         if ticket.sla_breach_risk and ticket.sla_breach_risk > 0.7:
             follow_up_priority = TicketPriority.URGENT
-        new_ticket_number = f"TKT-{datetime.utcnow().strftime('%Y%m%d')}-{db.query(Ticket).count() + 1:06d}"
+        new_ticket_number = allocate_er_ticket_number(db)
         follow_up_ticket = Ticket(
             ticket_number=new_ticket_number,
             organization_id=ticket.organization_id,

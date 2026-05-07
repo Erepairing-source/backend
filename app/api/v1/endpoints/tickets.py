@@ -3,17 +3,20 @@ Ticket endpoints
 """
 from fastapi import APIRouter, Depends, HTTPException, status, Query, Body, Response, UploadFile, File
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 from typing import List, Optional, Tuple
 from datetime import datetime, timedelta, timezone
 import logging
 import os
 import random
+import re
 import string
 import uuid
 
 from app.core.database import get_db
 from app.core.location_scope import (
     apply_ticket_query_scope,
+    apply_user_query_scope,
     device_query_for_user,
     get_device_if_accessible,
     get_ticket_if_accessible,
@@ -35,18 +38,110 @@ from app.models.device import Device
 from app.models.inventory import Part
 from app.models.product import Product
 from app.models.organization import Organization
+from app.models.warranty import Warranty, WarrantyStatus
 from app.models.escalation import Escalation, EscalationLevel, EscalationType
 from app.models.notification import Notification, NotificationType, NotificationChannel, NotificationStatus
 from app.services.ai.sentiment_analyzer import SentimentAnalyzerService
 from app.services.ai.case_triage import CaseTriageService
 from app.services.ai.sla_prediction import SLABreachPredictionService
 from app.services.policy_matcher import PolicyMatcherService
+from app.services.ticket_numbering import allocate_er_ticket_number
 from app.models.sla_policy import SLAType
 
 logger = logging.getLogger(__name__)
 
+_SERVICE_LOOKUP_ROLES = frozenset(
+    {
+        UserRole.SUPPORT_AGENT,
+        UserRole.ORGANIZATION_ADMIN,
+        UserRole.SUPPORT_ENGINEER,
+        UserRole.CITY_ADMIN,
+        UserRole.STATE_ADMIN,
+        UserRole.COUNTRY_ADMIN,
+        UserRole.PLATFORM_ADMIN,
+        UserRole.VENDOR,
+    }
+)
+
+
+def _ticket_quick_row_safe(db: Session, t: Ticket) -> dict:
+    prio = t.priority.value if t.priority else ""
+    cust_name = t.customer_name
+    if not cust_name and t.customer_id:
+        cu = db.query(User).filter(User.id == t.customer_id).first()
+        cust_name = cu.full_name if cu else None
+    serial = None
+    if t.device_id:
+        dv = db.query(Device).filter(Device.id == t.device_id).first()
+        serial = dv.serial_number if dv else None
+    return {
+        "id": t.id,
+        "ticket_number": t.ticket_number,
+        "status": t.status.value if t.status else "",
+        "priority": prio,
+        "customer_name": cust_name,
+        "device_serial": serial,
+        "created_at": t.created_at.isoformat() if t.created_at else None,
+    }
+
+
+def _ticket_lookup_detail(db: Session, t: Ticket) -> dict:
+    base = _ticket_quick_row_safe(db, t)
+    base["issue_description"] = (t.issue_description or "")[:280]
+    base["assigned_engineer_id"] = t.assigned_engineer_id
+    base["device_id"] = t.device_id
+    base["customer_id"] = t.customer_id
+    base["service_address"] = t.service_address
+    return base
+
+
+def _customer_lookup_mini(u: User) -> dict:
+    return {
+        "id": u.id,
+        "full_name": u.full_name,
+        "email": u.email,
+        "phone": u.phone,
+        "address_pincode": getattr(u, "address_pincode", None),
+        "organization_id": u.organization_id,
+    }
+
+
+def _device_service_profile_dict(db: Session, device: Device) -> dict:
+    warranty_status = None
+    active_warranty = (
+        db.query(Warranty)
+        .filter(
+            Warranty.device_id == device.id,
+            Warranty.status == WarrantyStatus.ACTIVE,
+            Warranty.end_date >= datetime.now(timezone.utc),
+        )
+        .first()
+    )
+    if active_warranty:
+        warranty_status = "in_warranty"
+    else:
+        any_warranty = db.query(Warranty).filter(Warranty.device_id == device.id).first()
+        if any_warranty:
+            warranty_status = "out_of_warranty"
+        else:
+            warranty_status = "unknown"
+    owner = db.query(User).filter(User.id == device.customer_id).first()
+    return {
+        "id": device.id,
+        "serial_number": device.serial_number,
+        "brand": device.brand,
+        "model_number": device.model_number,
+        "product_category": device.product_category,
+        "customer_id": device.customer_id,
+        "warranty_status": warranty_status,
+        "purchase_date": device.purchase_date.isoformat() if device.purchase_date else None,
+        "customer": _customer_lookup_mini(owner) if owner else None,
+    }
+
 router = APIRouter()
 triage_service = CaseTriageService()
+sla_service = SLABreachPredictionService()
+sentiment_service = SentimentAnalyzerService()
 
 
 def _parse_ticket_device_id(raw) -> Optional[int]:
@@ -90,8 +185,6 @@ def _customer_email_and_name(db: Session, ticket: Ticket) -> Tuple[Optional[str]
     if not u or not u.email:
         return None, None
     return u.email, u.full_name
-sla_service = SLABreachPredictionService()
-sentiment_service = SentimentAnalyzerService()
 
 
 def _generate_otp(length: int = 6) -> str:
@@ -303,11 +396,34 @@ async def create_ticket(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail="You can only create tickets for customers in your organization.",
                 )
-        if parsed_device_id is not None:
+
+        device = None
+        # Serial-first (Dell-style): resolve device in org scope; owner becomes ticket customer
+        if serial_clean:
+            device = (
+                device_query_for_user(db, current_user)
+                .filter(Device.serial_number == serial_clean)
+                .first()
+            )
+            if device:
+                owner = db.query(User).filter(User.id == device.customer_id).first()
+                if not owner or owner.role != UserRole.CUSTOMER:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Device owner is not a valid customer record.",
+                    )
+                if ticket_customer is not None and owner.id != ticket_customer.id:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="This serial number is registered to a different customer than the one selected.",
+                    )
+                ticket_customer = owner
+
+        if device is None and parsed_device_id is not None:
             if not ticket_customer:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Select a customer before selecting one of their registered devices.",
+                    detail="Select a customer or enter a device serial number first.",
                 )
             device = (
                 db.query(Device)
@@ -322,12 +438,8 @@ async def create_ticket(
                     status_code=status.HTTP_404_NOT_FOUND,
                     detail="Device not found for this customer.",
                 )
-        elif serial_clean:
-            if not ticket_customer:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Select a customer before entering one of their registered device serial numbers.",
-                )
+
+        if device is None and serial_clean and ticket_customer:
             device = (
                 db.query(Device)
                 .filter(
@@ -376,6 +488,16 @@ async def create_ticket(
             ),
         )
 
+    # Support agent: if device resolved but customer not (e.g. API sent only device_id), attach device owner
+    if (
+        current_user.role == UserRole.SUPPORT_AGENT
+        and device is not None
+        and ticket_customer is None
+    ):
+        owner = db.query(User).filter(User.id == device.customer_id).first()
+        if owner and owner.role == UserRole.CUSTOMER:
+            ticket_customer = owner
+
     if ticket_customer:
         customer_name = customer_name or _clean_text(ticket_customer.full_name, max_length=255)
         customer_phone = customer_phone or _clean_text(ticket_customer.phone, max_length=20)
@@ -386,6 +508,15 @@ async def create_ticket(
         customer_phone = customer_phone or _clean_text(current_user.phone, max_length=20)
     if current_user.organization:
         customer_company = customer_company or _clean_text(current_user.organization.name, max_length=255)
+
+    if current_user.role == UserRole.SUPPORT_AGENT and device is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Support tickets must be anchored to a registered device. "
+                "Enter the serial number / Service Tag, or select a device for the customer."
+            ),
+        )
 
     missing_contact_fields = []
     if not customer_name:
@@ -403,8 +534,8 @@ async def create_ticket(
     service_latitude = _normalize_service_coord(service_latitude)
     service_longitude = _normalize_service_coord(service_longitude)
 
-    # Generate unique ticket number (safe even when rows are deleted/concurrent writes happen)
-    ticket_number = f"TKT-{datetime.utcnow().strftime('%Y%m%d')}-{uuid.uuid4().hex[:10].upper()}"
+    # Human-readable ticket id: ER-YYYYMMDD-NNN (daily sequence)
+    ticket_number = allocate_er_ticket_number(db)
     
     # AI Triage
     triage_result = await triage_service.triage_ticket(
@@ -594,6 +725,101 @@ def list_tickets(
     ]
 
 
+@router.get("/service-lookup")
+def service_lookup(
+    q: str = Query(..., min_length=1, max_length=200),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Unified lookup: ticket id (ER-* / TKT-*), pincode, device serial (Service Tag), or customer name.
+    Scoped the same way as ticket/device list APIs for the caller's role.
+    """
+    if current_user.role not in _SERVICE_LOOKUP_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Service lookup is not available for your role.",
+        )
+    raw = (q or "").strip()
+    interpreted: List[str] = []
+    result: dict = {
+        "query": raw,
+        "interpreted_as": interpreted,
+        "ticket": None,
+        "device": None,
+        "device_ticket_history": [],
+        "customers": [],
+        "tickets_by_pincode": [],
+    }
+    q_compact = re.sub(r"\s+", "", raw)
+    q_upper = q_compact.upper()
+
+    if re.match(r"^ER-\d{8}-\d+$", q_upper) or q_upper.startswith("TKT-"):
+        interpreted.append("ticket_id")
+        tn = raw.strip()
+        ticket = (
+            apply_ticket_query_scope(db.query(Ticket), current_user, db)
+            .filter(or_(Ticket.ticket_number == tn, Ticket.ticket_number == q_upper))
+            .first()
+        )
+        if ticket:
+            result["ticket"] = _ticket_lookup_detail(db, ticket)
+        return result
+
+    pin_digits = re.sub(r"[\s-]", "", raw)
+    if pin_digits.isdigit() and 5 <= len(pin_digits) <= 8:
+        interpreted.append("pincode")
+        pin = pin_digits
+        customers = (
+            apply_user_query_scope(db.query(User), current_user)
+            .filter(
+                User.role == UserRole.CUSTOMER,
+                User.address_pincode == pin,
+            )
+            .limit(40)
+            .all()
+        )
+        result["customers"] = [_customer_lookup_mini(u) for u in customers]
+        ids = [u.id for u in customers]
+        conds = [Ticket.service_address.ilike(f"%{pin}%")]
+        if ids:
+            conds.append(Ticket.customer_id.in_(ids))
+        pq = (
+            apply_ticket_query_scope(db.query(Ticket), current_user, db)
+            .filter(or_(*conds))
+            .order_by(Ticket.created_at.desc())
+            .limit(50)
+        )
+        result["tickets_by_pincode"] = [_ticket_quick_row_safe(db, t) for t in pq.all()]
+        return result
+
+    interpreted.append("serial_lookup")
+    device = device_query_for_user(db, current_user).filter(Device.serial_number == raw).first()
+    if not device:
+        device = device_query_for_user(db, current_user).filter(Device.serial_number == raw.upper()).first()
+    if device:
+        interpreted.append("matched_device")
+        result["device"] = _device_service_profile_dict(db, device)
+        hist = (
+            apply_ticket_query_scope(db.query(Ticket), current_user, db)
+            .filter(Ticket.device_id == device.id)
+            .order_by(Ticket.created_at.desc())
+            .limit(35)
+            .all()
+        )
+        result["device_ticket_history"] = [_ticket_quick_row_safe(db, t) for t in hist]
+        return result
+
+    interpreted.append("customer_name")
+    if len(raw) >= 2:
+        nq = apply_user_query_scope(db.query(User), current_user).filter(
+            User.role == UserRole.CUSTOMER,
+            User.full_name.ilike(f"%{raw}%"),
+        )
+        result["customers"] = [_customer_lookup_mini(u) for u in nq.limit(25).all()]
+    return result
+
+
 @router.get("/{ticket_id}")
 async def get_ticket(
     ticket_id: int,
@@ -687,6 +913,9 @@ async def get_ticket(
         "arrival_confirmed_at": ticket.arrival_confirmed_at.isoformat() if ticket.arrival_confirmed_at else None,
         "arrival_latitude": ticket.arrival_latitude,
         "arrival_longitude": ticket.arrival_longitude,
+        "customer_otp_verified": bool(ticket.customer_otp_verified),
+        "otp_start_verified_at": ticket.otp_start_verified_at.isoformat() if getattr(ticket, "otp_start_verified_at", None) else None,
+        "otp_complete_verified_at": ticket.otp_complete_verified_at.isoformat() if getattr(ticket, "otp_complete_verified_at", None) else None,
         "customer_rating": ticket.customer_rating,
         "customer_feedback": ticket.customer_feedback,
         "customer_dispute_tags": ticket.customer_dispute_tags or [],
@@ -1007,6 +1236,7 @@ def verify_start_otp(
     if otp_row.otp_code != otp:
         raise HTTPException(status_code=400, detail="Invalid OTP")
     otp_row.verified_at = now
+    ticket.otp_start_verified_at = now
     ticket.status = TicketStatus.IN_PROGRESS
     ticket.started_at = now
     comment = TicketComment(
@@ -1168,6 +1398,8 @@ def resolve_ticket(
     ticket.parts_used = parts_used
     ticket.customer_signature = customer_signature
     ticket.customer_otp_verified = customer_otp_verified
+    if customer_otp_verified:
+        ticket.otp_complete_verified_at = datetime.now(timezone.utc)
     ticket.resolved_at = datetime.utcnow()
     
     # Parts will be deducted after City Admin approval

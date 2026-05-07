@@ -238,6 +238,7 @@ def get_current_user(
         "organization_id": user.organization_id,
         "organization_name": user.organization.name if user.organization else None,
         "is_verified": bool(user.is_verified),
+        "address_pincode": getattr(user, "address_pincode", None),
     }
 
 

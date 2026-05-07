@@ -48,7 +48,8 @@ class User(Base):
     country_id = Column(Integer, ForeignKey("countries.id"), nullable=True)
     state_id = Column(Integer, ForeignKey("states.id"), nullable=True)
     city_id = Column(Integer, ForeignKey("cities.id"), nullable=True)
-    
+    address_pincode = Column(String(20), nullable=True, index=True)
+
     # Engineer specific
     engineer_skill_level = Column(String(50), nullable=True)  # junior, senior, expert
     engineer_specialization = Column(Text, nullable=True)  # JSON array of product categories

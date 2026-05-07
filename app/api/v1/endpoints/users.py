@@ -426,6 +426,7 @@ def list_users(
             "engineer_specialization": u.engineer_specialization,
             "is_active": u.is_active,
             "is_verified": u.is_verified,
+            "address_pincode": getattr(u, "address_pincode", None),
             "created_at": u.created_at,
         }
         for u in users
@@ -697,6 +698,10 @@ def update_user(
         user.country_id = normalized_country_id
         user.state_id = normalized_state_id
         user.city_id = normalized_city_id
+
+    if getattr(user_data, "address_pincode", None) is not None:
+        ap = user_data.address_pincode
+        user.address_pincode = (str(ap).strip()[:20] or None) if ap is not None else None
     
     db.commit()
     db.refresh(user)
