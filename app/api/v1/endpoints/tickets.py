@@ -306,6 +306,19 @@ def _save_upload_file(upload: UploadFile, subdir: str) -> str:
     return f"/uploads/{subdir}/{filename}"
 
 
+@router.post("/uploads")
+def upload_ticket_attachment(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    """Upload customer/support-agent issue attachment and return stored URL."""
+    if not file or not file.filename:
+        raise HTTPException(status_code=400, detail="file is required")
+    # Keep ticket evidence in a dedicated folder.
+    url = _save_upload_file(file, "ticket-issues")
+    return {"url": url, "filename": file.filename, "uploaded_by": current_user.id}
+
+
 def _ticket_or_404(db: Session, ticket_id: int, current_user: User) -> Ticket:
     """Load a ticket only if the current user may access it (same rules as GET /tickets/{id})."""
     ticket = get_ticket_if_accessible(db, ticket_id, current_user)

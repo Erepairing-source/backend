@@ -161,20 +161,23 @@ class RoutingService:
         }
 
     def get_static_map_url(self, latitude: float, longitude: float, zoom: int = 14, width: int = 600, height: int = 400):
-        if self.provider == "google":
-            if not settings.GOOGLE_MAPS_API_KEY:
-                return None
+        if self.provider == "google" and settings.GOOGLE_MAPS_API_KEY:
             return (
                 "https://maps.googleapis.com/maps/api/staticmap"
                 f"?center={latitude},{longitude}&zoom={zoom}"
                 f"&size={width}x{height}&markers={latitude},{longitude}"
                 f"&key={settings.GOOGLE_MAPS_API_KEY}"
             )
-        if not settings.MAPBOX_ACCESS_TOKEN:
-            return None
+        if self.provider != "google" and settings.MAPBOX_ACCESS_TOKEN:
+            return (
+                "https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/"
+                f"pin-s+ff0000({longitude},{latitude})/"
+                f"{longitude},{latitude},{zoom},0/{width}x{height}"
+                f"?access_token={settings.MAPBOX_ACCESS_TOKEN}"
+            )
+        # No commercial API keys: OSM static map for local dev / fallback (fair-use public server).
         return (
-            "https://api.mapbox.com/styles/v1/mapbox/streets-v12/static/"
-            f"pin-s+ff0000({longitude},{latitude})/"
-            f"{longitude},{latitude},{zoom},0/{width}x{height}"
-            f"?access_token={settings.MAPBOX_ACCESS_TOKEN}"
+            "https://staticmap.openstreetmap.de/staticmap.php"
+            f"?center={latitude},{longitude}&zoom={zoom}&size={width}x{height}"
+            f"&markers={latitude},{longitude},red-pushpin"
         )

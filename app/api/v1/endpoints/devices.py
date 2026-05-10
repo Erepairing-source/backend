@@ -15,6 +15,7 @@ import uuid
 from app.core.database import get_db
 from app.core.location_scope import device_query_for_user, get_device_if_accessible, apply_ticket_query_scope
 from app.core.permissions import get_current_user
+from app.core.security import get_pending_password_hash
 from app.models.user import User, UserRole
 from app.models.device import Device, DeviceRegistration
 from app.models.warranty import Warranty, WarrantyStatus
@@ -112,6 +113,110 @@ def _build_warranty_summary(warranty_details: Optional[dict]) -> Optional[str]:
     return f"{until_text}; {warranty_type} warranty; {parts_text}; {services_text}."
 
 
+def _normalize_email(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return None
+    s = str(v).strip().lower()
+    return s or None
+
+
+def _normalize_phone(v: Optional[str]) -> Optional[str]:
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s or None
+
+
+def _resolve_device_customer_for_support_agent(
+    db: Session,
+    current_user: User,
+    device_data: dict,
+) -> User:
+    """
+    Resolve customer for support-agent initiated device registration.
+    If needed, create a pre-registered customer account (pending password) that can
+    later be completed via public signup with the same org+email/phone.
+    """
+    if not current_user.organization_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Support account must be linked to an organization.",
+        )
+
+    raw_customer_id = device_data.get("customer_id")
+    if raw_customer_id not in (None, ""):
+        try:
+            cid = int(raw_customer_id)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="customer_id must be a valid integer.")
+        customer = (
+            db.query(User)
+            .filter(
+                User.id == cid,
+                User.role == UserRole.CUSTOMER,
+                User.organization_id == current_user.organization_id,
+            )
+            .first()
+        )
+        if not customer:
+            raise HTTPException(status_code=404, detail="Customer not found in your organization.")
+        return customer
+
+    support_customer = device_data.get("support_customer") or {}
+    if not isinstance(support_customer, dict):
+        raise HTTPException(status_code=400, detail="support_customer must be an object.")
+
+    full_name = str(support_customer.get("full_name") or "").strip()
+    email = _normalize_email(support_customer.get("email"))
+    phone = _normalize_phone(support_customer.get("phone"))
+
+    if not full_name or not email or not phone:
+        raise HTTPException(
+            status_code=400,
+            detail="For support-led customer onboarding, provide support_customer.full_name, email, and phone.",
+        )
+
+    existing_email = db.query(User).filter(User.email == email).first()
+    existing_phone = db.query(User).filter(User.phone == phone).first()
+
+    if existing_email and existing_phone and existing_email.id != existing_phone.id:
+        raise HTTPException(
+            status_code=400,
+            detail="This email and phone belong to different existing accounts.",
+        )
+
+    existing = existing_email or existing_phone
+    if existing:
+        if existing.role != UserRole.CUSTOMER:
+            raise HTTPException(status_code=400, detail="Email/phone belongs to a non-customer account.")
+        if existing.organization_id != current_user.organization_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Customer belongs to a different organization.",
+            )
+        if existing_email is None:
+            existing.email = email
+        if existing_phone is None:
+            existing.phone = phone
+        if not existing.full_name:
+            existing.full_name = full_name
+        return existing
+
+    customer = User(
+        email=email,
+        phone=phone,
+        password_hash=get_pending_password_hash(),
+        full_name=full_name,
+        role=UserRole.CUSTOMER,
+        organization_id=current_user.organization_id,
+        is_active=True,
+        is_verified=False,
+    )
+    db.add(customer)
+    db.flush()
+    return customer
+
+
 @router.post("/", status_code=status.HTTP_201_CREATED)
 def register_device(
     device_data: dict = Body(...),
@@ -159,14 +264,18 @@ def register_device(
         except:
             pass
     
+    device_customer = current_user
+    if current_user.role == UserRole.SUPPORT_AGENT:
+        device_customer = _resolve_device_customer_for_support_agent(db, current_user, device_data)
+
     # Create device
     device = Device(
         serial_number=serial_number,
         model_number=model_number,
         product_category=product_category,
         brand=brand,
-        customer_id=current_user.id,
-        organization_id=current_user.organization_id,
+        customer_id=device_customer.id,
+        organization_id=device_customer.organization_id or current_user.organization_id,
         purchase_date=purchase_dt,
         invoice_number=invoice_number,
         invoice_photo=invoice_photo,
@@ -197,6 +306,7 @@ def register_device(
         "model_number": device.model_number,
         "product_category": device.product_category,
         "brand": device.brand,
+        "customer_id": device.customer_id,
         "message": "Device registered successfully"
     }
 

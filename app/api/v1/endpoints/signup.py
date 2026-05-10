@@ -629,31 +629,55 @@ def signup_customer(
     if not full_name:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="full_name is required")
     existing_email = db.query(User).filter(User.email == email).first()
-    if existing_email:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
     existing_phone = db.query(User).filter(User.phone == phone).first()
-    if existing_phone:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Phone number already registered")
+    if existing_email and existing_phone and existing_email.id != existing_phone.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Email and phone belong to different existing accounts. Contact support.",
+        )
+    existing_customer = existing_email or existing_phone
+    if existing_customer:
+        if existing_customer.role != UserRole.CUSTOMER:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email/phone already used by another account type")
+        if existing_customer.organization_id != org_id:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Account exists under a different organization")
+        if existing_customer.is_verified or existing_customer.last_login is not None:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email or phone already registered")
+
     use_password_email = not customer_data.get("password") or not str(customer_data.get("password", "")).strip()
-    if use_password_email:
-        password_hash = get_pending_password_hash()
+    if existing_customer:
+        customer = existing_customer
+        customer.email = email
+        customer.phone = phone
+        customer.full_name = full_name
+        customer.organization_id = org_id
+        customer.is_active = True
+        if use_password_email:
+            customer.password_hash = get_pending_password_hash()
+            customer.is_verified = False
+        else:
+            customer.password_hash = get_password_hash(customer_data["password"])
+            customer.is_verified = False
     else:
-        password_hash = get_password_hash(customer_data["password"])
-    customer = User(
-        email=email,
-        phone=phone,
-        password_hash=password_hash,
-        full_name=full_name,
-        role=UserRole.CUSTOMER,
-        organization_id=org_id,
-        country_id=None,
-        state_id=None,
-        city_id=None,
-        is_active=True,
-        is_verified=False,
-    )
-    db.add(customer)
-    db.flush()
+        if use_password_email:
+            password_hash = get_pending_password_hash()
+        else:
+            password_hash = get_password_hash(customer_data["password"])
+        customer = User(
+            email=email,
+            phone=phone,
+            password_hash=password_hash,
+            full_name=full_name,
+            role=UserRole.CUSTOMER,
+            organization_id=org_id,
+            country_id=None,
+            state_id=None,
+            city_id=None,
+            is_active=True,
+            is_verified=False,
+        )
+        db.add(customer)
+        db.flush()
     if use_password_email:
         create_and_send_set_password_token(db, customer)
     else:

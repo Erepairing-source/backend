@@ -3,9 +3,11 @@ Policy Matching Service
 Matches SLA and Service Policies to tickets based on various criteria
 """
 from typing import Optional, Dict, Any, List
+import logging
 from datetime import datetime, timedelta, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_
+from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from app.models.sla_policy import SLAPolicy, ServicePolicy, SLAType
 from app.models.ticket import Ticket, TicketPriority
@@ -17,6 +19,7 @@ class PolicyMatcherService:
     
     def __init__(self, db: Session):
         self.db = db
+        self._logger = logging.getLogger(__name__)
     
     def find_matching_sla_policy(
         self,
@@ -233,7 +236,18 @@ class PolicyMatcherService:
         if policy_type:
             query = query.filter(ServicePolicy.policy_type == policy_type)
         
-        policies = query.all()
+        try:
+            policies = query.all()
+        except (OperationalError, ProgrammingError) as exc:
+            msg = str(exc)
+            if "Unknown column" in msg and "service_policies." in msg:
+                # Keep ticket creation working if DB schema is behind service policy model.
+                self._logger.warning(
+                    "Service policy lookup skipped due to schema mismatch: %s",
+                    msg,
+                )
+                return []
+            raise
         
         # Score policies by specificity
         matching_policies = []
