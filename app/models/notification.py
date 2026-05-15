@@ -42,33 +42,34 @@ class NotificationStatus(str, enum.Enum):
     FAILED = "failed"
 
 
-class StrEnumType(TypeDecorator):
+def StrEnumType(enum_class: type[enum.Enum], length: int = 32):
     """
     MySQL native ENUM columns store lowercase string labels (ticket_created, …).
     SQLAlchemy's Enum() validates reads against member *names* (TICKET_CREATED) and
     raises LookupError. Bind/read via String + explicit .value mapping (see CoercedSLAType).
+
+    Factory returns a TypeDecorator instance; `impl` must be set at class level (not in __init__).
     """
 
-    cache_ok = True
+    class _StrEnumColumn(TypeDecorator):
+        impl = String(length)
+        cache_ok = True
 
-    def __init__(self, enum_class: type[enum.Enum], length: int = 32):
-        self.enum_class = enum_class
-        self.impl = String(length)
-        super().__init__()
+        def process_bind_param(self, value, dialect):
+            if value is None:
+                return None
+            if isinstance(value, enum_class):
+                return value.value
+            return enum_class(value).value
 
-    def process_bind_param(self, value, dialect):
-        if value is None:
-            return None
-        if isinstance(value, self.enum_class):
-            return value.value
-        return self.enum_class(value).value
+        def process_result_value(self, value, dialect):
+            if value is None:
+                return None
+            if isinstance(value, enum_class):
+                return value
+            return enum_class(value)
 
-    def process_result_value(self, value, dialect):
-        if value is None:
-            return None
-        if isinstance(value, self.enum_class):
-            return value
-        return self.enum_class(value)
+    return _StrEnumColumn()
 
 
 class Notification(Base):
@@ -81,8 +82,8 @@ class Notification(Base):
     # Recipient
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     
-    notification_type = Column(StrEnumType(NotificationType, 32), nullable=False, index=True)
-    channel = Column(StrEnumType(NotificationChannel, 16), nullable=False)
+    notification_type = Column(StrEnumType(NotificationType), nullable=False, index=True)
+    channel = Column(StrEnumType(NotificationChannel), nullable=False)
     title = Column(String(255), nullable=False)
     message = Column(Text, nullable=False)
     
@@ -92,7 +93,7 @@ class Notification(Base):
     
     # Status
     status = Column(
-        StrEnumType(NotificationStatus, 16),
+        StrEnumType(NotificationStatus),
         default=NotificationStatus.PENDING,
         index=True,
     )
