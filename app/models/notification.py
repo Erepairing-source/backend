@@ -52,9 +52,24 @@ class Notification(Base):
     # Recipient
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     
-    # Notification details
-    notification_type = Column(Enum(NotificationType), nullable=False, index=True)
-    channel = Column(Enum(NotificationChannel), nullable=False)
+    # Notification details (values_callable: MySQL ENUM stores .value strings, not member names)
+    notification_type = Column(
+        Enum(
+            NotificationType,
+            name="notificationtype",
+            values_callable=lambda obj: [m.value for m in obj],
+        ),
+        nullable=False,
+        index=True,
+    )
+    channel = Column(
+        Enum(
+            NotificationChannel,
+            name="notificationchannel",
+            values_callable=lambda obj: [m.value for m in obj],
+        ),
+        nullable=False,
+    )
     title = Column(String(255), nullable=False)
     message = Column(Text, nullable=False)
     
@@ -63,7 +78,15 @@ class Notification(Base):
     device_id = Column(Integer, ForeignKey("devices.id"), nullable=True)
     
     # Status
-    status = Column(Enum(NotificationStatus), default=NotificationStatus.PENDING, index=True)
+    status = Column(
+        Enum(
+            NotificationStatus,
+            name="notificationstatus",
+            values_callable=lambda obj: [m.value for m in obj],
+        ),
+        default=NotificationStatus.PENDING,
+        index=True,
+    )
     read_at = Column(DateTime(timezone=True), nullable=True)
     
     # Additional data
