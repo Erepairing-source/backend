@@ -804,7 +804,9 @@ async def bulk_register_devices(
         # Process rows
         successful = 0
         failed = 0
+        skipped = 0
         errors = []
+        skipped_rows = []
         
         for row_idx, row in enumerate(worksheet.iter_rows(min_row=2, values_only=False), start=2):
             # Skip empty rows
@@ -876,17 +878,20 @@ async def bulk_register_devices(
                 else:
                     device_customer = current_user
 
-                # Check if device already exists
+                # Skip devices that already exist (do not count as failures)
                 existing_device = db.query(Device).filter(Device.serial_number == serial_number).first()
                 if existing_device:
+                    skipped += 1
                     if existing_device.customer_id == device_customer.id:
-                        errors.append(f"Row {row_idx}: Device with serial {serial_number} already registered to this customer")
-                        failed += 1
-                        continue
+                        reason = "Device already registered for this customer"
                     else:
-                        errors.append(f"Row {row_idx}: Device with serial {serial_number} already registered to another customer")
-                        failed += 1
-                        continue
+                        reason = "Serial number already registered to another customer"
+                    skipped_rows.append({
+                        "row": row_idx,
+                        "serial_number": serial_number,
+                        "reason": reason,
+                    })
+                    continue
                 
                 # Parse purchase date
                 purchase_dt = None
@@ -936,12 +941,20 @@ async def bulk_register_devices(
         if successful > 0:
             db.commit()
         
+        message_parts = [f"Successfully registered {successful} device(s)"]
+        if skipped:
+            message_parts.append(f"skipped {skipped} existing device(s)")
+        if failed:
+            message_parts.append(f"{failed} row(s) failed")
+
         return {
-            "total": successful + failed,
+            "total": successful + failed + skipped,
             "successful": successful,
             "failed": failed,
-            "errors": errors[:50] if len(errors) > 50 else errors,  # Limit errors to 50
-            "message": f"Successfully registered {successful} device(s)"
+            "skipped": skipped,
+            "skipped_rows": skipped_rows[:50] if len(skipped_rows) > 50 else skipped_rows,
+            "errors": errors[:50] if len(errors) > 50 else errors,
+            "message": ". ".join(message_parts),
         }
         
     except HTTPException:
