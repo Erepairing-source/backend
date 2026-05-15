@@ -1,7 +1,7 @@
 """
 Notification models for real-time updates
 """
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Enum, Text, JSON
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, ForeignKey, Text, JSON, TypeDecorator
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 import enum
@@ -42,6 +42,35 @@ class NotificationStatus(str, enum.Enum):
     FAILED = "failed"
 
 
+class StrEnumType(TypeDecorator):
+    """
+    MySQL native ENUM columns store lowercase string labels (ticket_created, …).
+    SQLAlchemy's Enum() validates reads against member *names* (TICKET_CREATED) and
+    raises LookupError. Bind/read via String + explicit .value mapping (see CoercedSLAType).
+    """
+
+    cache_ok = True
+
+    def __init__(self, enum_class: type[enum.Enum], length: int = 32):
+        self.enum_class = enum_class
+        self.impl = String(length)
+        super().__init__()
+
+    def process_bind_param(self, value, dialect):
+        if value is None:
+            return None
+        if isinstance(value, self.enum_class):
+            return value.value
+        return self.enum_class(value).value
+
+    def process_result_value(self, value, dialect):
+        if value is None:
+            return None
+        if isinstance(value, self.enum_class):
+            return value
+        return self.enum_class(value)
+
+
 class Notification(Base):
     """User notification"""
     __tablename__ = "notifications"
@@ -52,24 +81,8 @@ class Notification(Base):
     # Recipient
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     
-    # Notification details (values_callable: MySQL ENUM stores .value strings, not member names)
-    notification_type = Column(
-        Enum(
-            NotificationType,
-            name="notificationtype",
-            values_callable=lambda obj: [m.value for m in obj],
-        ),
-        nullable=False,
-        index=True,
-    )
-    channel = Column(
-        Enum(
-            NotificationChannel,
-            name="notificationchannel",
-            values_callable=lambda obj: [m.value for m in obj],
-        ),
-        nullable=False,
-    )
+    notification_type = Column(StrEnumType(NotificationType, 32), nullable=False, index=True)
+    channel = Column(StrEnumType(NotificationChannel, 16), nullable=False)
     title = Column(String(255), nullable=False)
     message = Column(Text, nullable=False)
     
@@ -79,11 +92,7 @@ class Notification(Base):
     
     # Status
     status = Column(
-        Enum(
-            NotificationStatus,
-            name="notificationstatus",
-            values_callable=lambda obj: [m.value for m in obj],
-        ),
+        StrEnumType(NotificationStatus, 16),
         default=NotificationStatus.PENDING,
         index=True,
     )
