@@ -17,7 +17,6 @@ from app.core.database import get_db
 from app.core.location_scope import apply_user_query_scope
 from app.core.location_resolution import materialize_user_location_ids
 from app.core.permissions import get_current_user, require_role
-from app.core.config import frontend_base_url
 from app.core.security import get_password_hash, get_pending_password_hash
 from app.core.password_set_email import create_and_send_set_password_token
 from app.core.email import send_credentials_email
@@ -121,6 +120,78 @@ def _generate_password(length: int = 10) -> str:
     return "".join(secrets.choice(alphabet) for _ in range(length))
 
 
+def _normalize_location_ids(
+    db: Session,
+    country_id: Optional[int],
+    state_id: Optional[int],
+    city_id: Optional[int],
+):
+    """Validate country/state/city FK chain (same rules as POST /users/)."""
+    if city_id:
+        city = db.query(City).filter(City.id == city_id).first()
+        if not city:
+            raise HTTPException(status_code=404, detail="City not found")
+        state = db.query(State).filter(State.id == city.state_id).first()
+        if not state:
+            raise HTTPException(status_code=404, detail="State not found for city")
+        country = db.query(Country).filter(Country.id == state.country_id).first()
+        if not country:
+            raise HTTPException(status_code=404, detail="Country not found for city")
+        if state_id and state_id != state.id:
+            raise HTTPException(status_code=400, detail="state_id does not match city_id")
+        if country_id and country_id != country.id:
+            raise HTTPException(status_code=400, detail="country_id does not match city_id")
+        return country.id, state.id, city.id
+    if state_id:
+        state = db.query(State).filter(State.id == state_id).first()
+        if not state:
+            raise HTTPException(status_code=404, detail="State not found")
+        if country_id and country_id != state.country_id:
+            raise HTTPException(status_code=400, detail="country_id does not match state_id")
+        return state.country_id, state.id, None
+    if country_id:
+        country = db.query(Country).filter(Country.id == country_id).first()
+        if not country:
+            raise HTTPException(status_code=404, detail="Country not found")
+        return country.id, None, None
+    return None, None, None
+
+
+def _excel_cell_str(row, key: str) -> Optional[str]:
+    if key not in row.index:
+        return None
+    val = row.get(key)
+    if pd.isna(val):
+        return None
+    text = str(val).strip()
+    return text or None
+
+
+def _excel_cell_int(row, key: str) -> Optional[int]:
+    text = _excel_cell_str(row, key)
+    if not text:
+        return None
+    try:
+        return int(float(text))
+    except ValueError:
+        return None
+
+
+def _resolve_bulk_customer_location(db: Session, row):
+    """Resolve optional location columns (IDs and/or names) like the Add User form."""
+    mc, ms, mct = materialize_user_location_ids(
+        db,
+        country_id=_excel_cell_int(row, "country_id"),
+        country_code=_excel_cell_str(row, "country_code"),
+        state_id=_excel_cell_int(row, "state_id"),
+        state_name=_excel_cell_str(row, "state_name"),
+        state_code=_excel_cell_str(row, "state_code"),
+        city_id=_excel_cell_int(row, "city_id"),
+        city_name=_excel_cell_str(row, "city_name"),
+    )
+    return _normalize_location_ids(db, mc, ms, mct)
+
+
 @router.get("/available-roles")
 def get_available_roles(
     current_user: User = Depends(require_role([
@@ -197,37 +268,6 @@ def create_user(
             )
         user_data.organization_id = current_user.organization_id
     
-    # Validate location mapping for role
-    def normalize_location(country_id, state_id, city_id):
-        if city_id:
-            city = db.query(City).filter(City.id == city_id).first()
-            if not city:
-                raise HTTPException(status_code=404, detail="City not found")
-            state = db.query(State).filter(State.id == city.state_id).first()
-            if not state:
-                raise HTTPException(status_code=404, detail="State not found for city")
-            country = db.query(Country).filter(Country.id == state.country_id).first()
-            if not country:
-                raise HTTPException(status_code=404, detail="Country not found for city")
-            if state_id and state_id != state.id:
-                raise HTTPException(status_code=400, detail="state_id does not match city_id")
-            if country_id and country_id != country.id:
-                raise HTTPException(status_code=400, detail="country_id does not match city_id")
-            return country.id, state.id, city.id
-        if state_id:
-            state = db.query(State).filter(State.id == state_id).first()
-            if not state:
-                raise HTTPException(status_code=404, detail="State not found")
-            if country_id and country_id != state.country_id:
-                raise HTTPException(status_code=400, detail="country_id does not match state_id")
-            return state.country_id, state.id, None
-        if country_id:
-            country = db.query(Country).filter(Country.id == country_id).first()
-            if not country:
-                raise HTTPException(status_code=404, detail="Country not found")
-            return country.id, None, None
-        return None, None, None
-
     mc, ms, mct = materialize_user_location_ids(
         db,
         country_id=user_data.country_id,
@@ -261,7 +301,8 @@ def create_user(
             detail="Country is required for this role. Select a country or send country_code (e.g. IN).",
         )
 
-    normalized_country_id, normalized_state_id, normalized_city_id = normalize_location(
+    normalized_country_id, normalized_state_id, normalized_city_id = _normalize_location_ids(
+        db,
         eff_country,
         eff_state,
         eff_city,
@@ -437,13 +478,19 @@ def list_users(
 async def bulk_create_customers(
     file: UploadFile = File(...),
     send_email: bool = Form(True),
-    current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
+    current_user: User = Depends(require_role([
+        UserRole.ORGANIZATION_ADMIN,
+        UserRole.SUPPORT_AGENT,
+    ])),
     db: Session = Depends(get_db)
 ):
     """
-    Org Admin: bulk create customers from Excel.
-    Excel columns: full_name (or Full Name), email (or Email), phone (or Phone).
-    If send_email=True, a random password is generated and sent to each customer's email.
+    Org Admin / Support Agent: bulk create customers from Excel (same fields as Add User for customers).
+
+    Required columns: full_name, email, phone.
+    Optional: password (leave blank to email a set-password link when send_email=True),
+    country_code or country_id, state_name or state_code or state_id,
+    city_name or city_id.
     """
     if not file.filename or not (file.filename.endswith(".xlsx") or file.filename.endswith(".xls")):
         raise HTTPException(status_code=400, detail="Upload an Excel file (.xlsx or .xls)")
@@ -467,15 +514,15 @@ async def bulk_create_customers(
                 status_code=400,
                 detail=f"Excel must have columns: full_name, email, phone. Found: {list(df.columns)}"
             )
-    login_url = f"{frontend_base_url()}/login"
     created = 0
     skipped = 0
     errors = []
     for idx, row in df.iterrows():
         row_num = idx + 2  # 1-based + header
-        full_name = str(row.get("full_name", "")).strip() if pd.notna(row.get("full_name")) else ""
-        email = str(row.get("email", "")).strip().lower() if pd.notna(row.get("email")) else ""
-        phone = str(row.get("phone", "")).strip() if pd.notna(row.get("phone")) else ""
+        full_name = _excel_cell_str(row, "full_name") or ""
+        email = (_excel_cell_str(row, "email") or "").lower()
+        phone = _excel_cell_str(row, "phone") or ""
+        password_raw = _excel_cell_str(row, "password")
         if not full_name or not email or not phone:
             errors.append({"row": row_num, "email": email or "(blank)", "error": "full_name, email, and phone are required"})
             skipped += 1
@@ -490,8 +537,19 @@ async def bulk_create_customers(
             errors.append({"row": row_num, "email": email, "error": "Phone already registered"})
             skipped += 1
             continue
-        password = _generate_password(10)
-        password_hash = get_password_hash(password)
+        try:
+            country_id, state_id, city_id = _resolve_bulk_customer_location(db, row)
+        except HTTPException as exc:
+            errors.append({"row": row_num, "email": email, "error": exc.detail})
+            skipped += 1
+            continue
+
+        use_set_password_email = not password_raw
+        if use_set_password_email:
+            password_hash = get_pending_password_hash()
+        else:
+            password_hash = get_password_hash(password_raw)
+
         user = User(
             email=email,
             phone=phone,
@@ -499,21 +557,31 @@ async def bulk_create_customers(
             full_name=full_name,
             role=UserRole.CUSTOMER,
             organization_id=org_id,
-            country_id=None,
-            state_id=None,
-            city_id=None,
+            country_id=country_id,
+            state_id=state_id,
+            city_id=city_id,
             is_active=True,
             is_verified=False,
         )
         db.add(user)
         db.flush()
-        if send_email:
+        if use_set_password_email:
+            if send_email:
+                create_and_send_set_password_token(db, user)
+        elif send_email:
             otp_code = create_email_verification_otp(db, user.id, ttl_minutes=15)
             send_credentials_email(
                 email,
                 full_name,
-                password,
+                password_raw,
                 email_verification_otp=otp_code,
+                email_subject="Your eRepairing account — sign in details",
+                body_intro=(
+                    "A support agent created your eRepairing account. Use the email and password below to sign in."
+                    if current_user.role == UserRole.SUPPORT_AGENT
+                    else "An administrator created your eRepairing account. Use the email and password below to sign in."
+                ),
+                subtitle="Your account is ready. Sign in with the details below, then verify your email with the code.",
             )
         created += 1
     db.commit()
@@ -528,11 +596,39 @@ async def bulk_create_customers(
 
 @router.get("/bulk-customers-template")
 def bulk_customers_template(
-    current_user: User = Depends(require_role([UserRole.ORGANIZATION_ADMIN])),
+    current_user: User = Depends(require_role([
+        UserRole.ORGANIZATION_ADMIN,
+        UserRole.SUPPORT_AGENT,
+    ])),
 ):
-    """Download Excel template for bulk customer upload. Columns: full_name, email, phone."""
-    df = pd.DataFrame(columns=["full_name", "email", "phone"])
-    df.loc[0] = ["John Doe", "john@example.com", "+91 9876543210"]
+    """Download Excel template for bulk customer upload (matches Add User customer fields)."""
+    columns = [
+        "full_name",
+        "email",
+        "phone",
+        "password",
+        "country_code",
+        "country_id",
+        "state_name",
+        "state_code",
+        "state_id",
+        "city_name",
+        "city_id",
+    ]
+    df = pd.DataFrame(columns=columns)
+    df.loc[0] = [
+        "John Doe",
+        "john@example.com",
+        "+919876543210",
+        "",
+        "IN",
+        "",
+        "Maharashtra",
+        "MH",
+        "",
+        "Mumbai",
+        "",
+    ]
     buf = io.BytesIO()
     df.to_excel(buf, index=False, engine="openpyxl")
     buf.seek(0)

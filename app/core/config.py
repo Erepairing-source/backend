@@ -168,6 +168,17 @@ class Settings(BaseSettings):
 
     # Daily reminder job: POST /api/v1/jobs/reminders/run with header X-Reminder-Secret
     REMINDER_JOB_SECRET: Optional[str] = None
+
+    # Razorpay (set in .env only — never commit live keys)
+    RAZORPAY_KEY_ID: Optional[str] = None
+    RAZORPAY_KEY_SECRET: Optional[str] = None
+    RAZORPAY_WEBHOOK_SECRET: Optional[str] = None
+    # Months after mandate setup before first plan charge (default 6)
+    RAZORPAY_BILLING_INTERVAL_MONTHS: int = 6
+    # ₹1 mandate authorization (paise) to save card/UPI for autopay
+    RAZORPAY_MANDATE_AMOUNT_PAISE: int = 100
+    # GST on subscription charges (18%)
+    SUBSCRIPTION_GST_RATE: float = 0.18
     
     # Environment (set ENVIRONMENT=production and DEBUG=false in production)
     ENVIRONMENT: str = "development"

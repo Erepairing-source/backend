@@ -20,8 +20,11 @@ try:
 except ImportError:
     OPENPYXL_AVAILABLE = False
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.permissions import require_role
+from app.services import razorpay_service
+from app.services.subscription_billing import first_billing_date_after_setup
 from app.core.data_isolation import check_organization_access, enforce_organization_isolation
 from app.core.location_resolution import resolve_location_ids, int_or_none
 from app.models.user import User, UserRole
@@ -129,11 +132,14 @@ def get_org_admin_dashboard(
                 if end.tzinfo is None:
                     end = end.replace(tzinfo=timezone.utc)
                 days_until_end = (end.date() - datetime.now(timezone.utc).date()).days
+            from app.services.subscription_payment_service import autopay_status_payload
+
             subscription_data = {
                 "plan_name": subscription.plan.name if subscription.plan else None,
                 "status": str(subscription.status) if subscription.status else None,
                 "end_date": subscription.end_date.isoformat() if subscription.end_date else None,
                 "days_until_end": days_until_end,
+                **autopay_status_payload(subscription),
             }
         
         return {
@@ -416,7 +422,7 @@ async def bulk_upload_products(
     
     Excel file should have the following columns:
     - product_name (required): Product name e.g., "Split AC 1.5T"
-    - category (required): Product category (ac, refrigerator, washing_machine, tv, microwave, air_purifier, water_purifier, other)
+    - category (required): Product category (ac, refrigerator, washing_machine, tv, microwave, air_purifier, water_purifier, laptop, computer, other)
     - brand (optional): Brand name
     - description (optional): Product description
     - default_warranty_months (optional): Default warranty in months (default: 12)
@@ -1759,7 +1765,12 @@ def upgrade_subscription(
         current_subscription.current_price = float(subscription_price)
         current_subscription.start_date = start_date
         current_subscription.end_date = end_date
-        current_subscription.status = "active"
+        if razorpay_service.is_razorpay_configured() and not current_subscription.autopay_setup_complete:
+            current_subscription.status = "pending_autopay"
+            if not current_subscription.next_billing_date:
+                current_subscription.next_billing_date = first_billing_date_after_setup(start_date)
+        else:
+            current_subscription.status = "active"
         
         db.commit()
         db.refresh(current_subscription)
@@ -1769,19 +1780,26 @@ def upgrade_subscription(
             "plan_name": plan.name,
             "billing_period": billing_period.value,
             "price": float(subscription_price),
-            "message": "Subscription upgraded successfully"
+            "message": "Subscription upgraded successfully",
+            "requires_autopay_setup": (
+                razorpay_service.is_razorpay_configured()
+                and not current_subscription.autopay_setup_complete
+            ),
         }
     else:
-        # Create new subscription
+        use_razorpay = razorpay_service.is_razorpay_configured()
         subscription = Subscription(
             organization_id=current_user.organization_id,
             plan_id=plan.id,
             billing_period=billing_period,
             current_price=float(subscription_price),
             currency="INR",
-            status="active",
+            status="pending_autopay" if use_razorpay else "active",
             start_date=start_date,
-            end_date=end_date
+            end_date=end_date,
+            next_billing_date=first_billing_date_after_setup(start_date) if use_razorpay else None,
+            billing_interval_months=int(settings.RAZORPAY_BILLING_INTERVAL_MONTHS or 6),
+            autopay_setup_complete=False,
         )
         
         db.add(subscription)
@@ -1793,7 +1811,8 @@ def upgrade_subscription(
             "plan_name": plan.name,
             "billing_period": billing_period.value,
             "price": float(subscription_price),
-            "message": "Subscription created successfully"
+            "message": "Subscription created successfully",
+            "requires_autopay_setup": use_razorpay,
         }
 
 

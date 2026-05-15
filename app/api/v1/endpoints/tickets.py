@@ -296,7 +296,8 @@ def _queue_customer_notifications(
 
 
 def _save_upload_file(upload: UploadFile, subdir: str) -> str:
-    base_dir = os.path.join(os.path.dirname(__file__), "..", "..", "uploads", subdir)
+    # Must resolve to app/uploads/... — same directory as StaticFiles in main.py (not app/api/uploads).
+    base_dir = os.path.join(os.path.dirname(__file__), "..", "..", "..", "uploads", subdir)
     os.makedirs(base_dir, exist_ok=True)
     ext = os.path.splitext(upload.filename or "")[1] or ".bin"
     filename = f"{uuid.uuid4().hex}{ext}"

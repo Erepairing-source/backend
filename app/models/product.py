@@ -18,6 +18,8 @@ class ProductCategory(str, enum.Enum):
     MICROWAVE = "microwave"
     AIR_PURIFIER = "air_purifier"
     WATER_PURIFIER = "water_purifier"
+    LAPTOP = "laptop"
+    COMPUTER = "computer"
     OTHER = "other"
 
 
@@ -44,6 +46,13 @@ def parse_product_category(raw) -> ProductCategory:
         "airpurifier": ProductCategory.AIR_PURIFIER,
         "water_purifier": ProductCategory.WATER_PURIFIER,
         "waterpurifier": ProductCategory.WATER_PURIFIER,
+        "laptop": ProductCategory.LAPTOP,
+        "laptops": ProductCategory.LAPTOP,
+        "notebook": ProductCategory.LAPTOP,
+        "computer": ProductCategory.COMPUTER,
+        "computers": ProductCategory.COMPUTER,
+        "pc": ProductCategory.COMPUTER,
+        "desktop": ProductCategory.COMPUTER,
         "other": ProductCategory.OTHER,
     }
     if s in aliases:
@@ -59,7 +68,7 @@ def parse_product_category(raw) -> ProductCategory:
     raise ValueError(
         f"Invalid product category {raw!r}. "
         f"Use a slug such as: ac, refrigerator, washing_machine, tv, microwave, "
-        f"air_purifier, water_purifier, other (or enum name e.g. OTHER)."
+        f"air_purifier, water_purifier, laptop, computer, other (or enum name e.g. OTHER)."
     )
 
 

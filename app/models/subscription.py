@@ -102,6 +102,13 @@ class Subscription(Base):
     payment_method = Column(String(50), nullable=True)
     last_payment_date = Column(DateTime(timezone=True), nullable=True)
     next_billing_date = Column(DateTime(timezone=True), nullable=True)
+    razorpay_customer_id = Column(String(64), nullable=True)
+    razorpay_token_id = Column(String(64), nullable=True)
+    razorpay_last_order_id = Column(String(64), nullable=True)
+    razorpay_last_payment_id = Column(String(64), nullable=True)
+    autopay_setup_complete = Column(Boolean, default=False)
+    billing_interval_months = Column(Integer, default=6)
+    autopay_method = Column(String(32), nullable=True)  # card, upi, etc.
     
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())

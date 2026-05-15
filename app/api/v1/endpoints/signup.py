@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_password_hash, create_access_token, get_pending_password_hash
 from app.core.config import settings
+from app.services import razorpay_service
+from app.services.subscription_billing import first_billing_date_after_setup
 from app.core.password_set_email import create_and_send_set_password_token
 from app.core.email_verification import create_email_verification_otp
 from app.core.email import send_email_verification_otp
@@ -373,6 +375,11 @@ def signup_organization(
             detail=f"Invalid final_price: {final_price} (type: {type(final_price)})"
         )
     
+    billing_interval = int(settings.RAZORPAY_BILLING_INTERVAL_MONTHS or 6)
+    use_razorpay = razorpay_service.is_razorpay_configured()
+    sub_status = "pending_autopay" if use_razorpay else "active"
+    next_bill = first_billing_date_after_setup(start_date) if use_razorpay else None
+
     # Create subscription with ALL fields including current_price
     subscription = Subscription(
         organization_id=organization.id,
@@ -380,9 +387,13 @@ def signup_organization(
         billing_period=billing_period,
         current_price=final_price,  # MUST be set here
         currency="INR",
-        status="active",
+        status=sub_status,
         start_date=start_date,
-        end_date=end_date
+        end_date=end_date,
+        next_billing_date=next_bill,
+        billing_interval_months=billing_interval,
+        auto_renew=True,
+        autopay_setup_complete=False,
     )
     
     # Double-check it's set (shouldn't be needed but just in case)
@@ -549,8 +560,13 @@ def signup_organization(
             "id": subscription.id,
             "plan_name": plan.name,
             "status": subscription.status,
-            "end_date": subscription.end_date.isoformat()
+            "end_date": subscription.end_date.isoformat(),
+            "next_billing_date": subscription.next_billing_date.isoformat()
+            if subscription.next_billing_date
+            else None,
         },
+        "requires_autopay_setup": use_razorpay,
+        "razorpay_enabled": use_razorpay,
     }
 
     if use_password_email:
