@@ -594,12 +594,25 @@ def get_service_profile_by_serial(
 @router.get("/bulk-register-template")
 def bulk_register_template(
     current_user: User = Depends(require_role([UserRole.CUSTOMER, UserRole.SUPPORT_AGENT])),
+    customer_id: Optional[int] = Query(None, description="Required for support agents — selected customer"),
+    db: Session = Depends(get_db),
 ):
-    """Download Excel template for bulk device registration (customer or support-agent columns)."""
+    """Download Excel template for bulk device registration (device columns only)."""
     if not OPENPYXL_AVAILABLE:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Excel processing library (openpyxl) is not installed. Please install it with: pip install openpyxl"
+        )
+
+    selected_customer = None
+    if current_user.role == UserRole.SUPPORT_AGENT:
+        if not customer_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Select a customer before downloading the template",
+            )
+        selected_customer = _resolve_device_customer_for_support_agent(
+            db, current_user, {"customer_id": customer_id}
         )
 
     workbook = openpyxl.Workbook()
@@ -614,46 +627,23 @@ def bulk_register_template(
         "purchase_date",
         "invoice_number",
     ]
-    if current_user.role == UserRole.SUPPORT_AGENT:
-        headers.extend(["customer_email", "customer_phone", "customer_full_name", "customer_id"])
     sheet.append(headers)
-    if current_user.role == UserRole.SUPPORT_AGENT:
-        sheet.append([
-            "SN-AC-1001",
-            "AR18TY3Q",
-            "AC",
-            "Samsung",
-            "2026-01-15",
-            "INV-1001",
-            "john@example.com",
-            "+919876543210",
-            "John Doe",
-            "",
-        ])
-        sheet.append([
-            "SN-WM-2001",
-            "FHM1207ZDL",
-            "Washing Machine",
-            "LG",
-            "2025-11-02",
-            "INV-1002",
-            "jane@example.com",
-            "+919876543211",
-            "Jane Doe",
-            "",
-        ])
-    else:
-        sheet.append(["SN-AC-1001", "AR18TY3Q", "AC", "Samsung", "2026-01-15", "INV-1001"])
-        sheet.append(["SN-WM-2001", "FHM1207ZDL", "Washing Machine", "LG", "2025-11-02", "INV-1002"])
+    sheet.append(["SN-AC-1001", "AR18TY3Q", "AC", "Samsung", "2026-01-15", "INV-1001"])
+    sheet.append(["SN-WM-2001", "FHM1207ZDL", "Washing Machine", "LG", "2025-11-02", "INV-1002"])
 
     buffer = io.BytesIO()
     workbook.save(buffer)
     buffer.seek(0)
 
+    filename = "bulk_device_registration_template.xlsx"
+    if selected_customer:
+        safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in (selected_customer.full_name or "customer"))[:40]
+        filename = f"bulk_devices_{safe_name}_{selected_customer.id}.xlsx"
+
     return StreamingResponse(
         buffer,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=bulk_device_registration_template.xlsx"},
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 
@@ -720,10 +710,11 @@ def get_device(
 @router.post("/bulk-register", status_code=status.HTTP_200_OK)
 async def bulk_register_devices(
     file: UploadFile = File(...),
+    customer_id: Optional[int] = Form(None),
     current_user: User = Depends(require_role([UserRole.CUSTOMER, UserRole.SUPPORT_AGENT])),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
-    """Bulk register devices from Excel. Customers: own account. Support agents: per-row customer columns."""
+    """Bulk register devices from Excel. Customers: own account. Support agents: all rows for one selected customer."""
     if not OPENPYXL_AVAILABLE:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -762,7 +753,17 @@ async def bulk_register_devices(
         customer_phone_col = None
         customer_name_col = None
         is_support_bulk = current_user.role == UserRole.SUPPORT_AGENT
-        
+        selected_support_customer = None
+        if is_support_bulk:
+            if not customer_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Select a customer before uploading devices",
+                )
+            selected_support_customer = _resolve_device_customer_for_support_agent(
+                db, current_user, {"customer_id": customer_id}
+            )
+
         for idx, header in enumerate(headers):
             if 'serial' in header:
                 serial_col = idx + 1
@@ -790,14 +791,13 @@ async def bulk_register_devices(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Excel file must contain columns: serial_number, model_number, product_category, brand"
             )
-        if is_support_bulk and not customer_id_col and not (
+        if is_support_bulk and not selected_support_customer and not customer_id_col and not (
             customer_email_col and customer_phone_col and customer_name_col
         ):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=(
-                    "Support agent bulk upload requires customer_id OR "
-                    "customer_email, customer_phone, and customer_full_name columns"
+                    "Select a customer in the app before upload, or include customer columns in the Excel file"
                 ),
             )
         
@@ -842,39 +842,42 @@ async def bulk_register_devices(
                     continue
                 
                 if is_support_bulk:
-                    try:
-                        cid_val = (
-                            row[customer_id_col - 1].value
-                            if customer_id_col and row[customer_id_col - 1].value is not None
-                            else None
-                        )
-                        c_email = (
-                            _normalize_email(row[customer_email_col - 1].value)
-                            if customer_email_col and row[customer_email_col - 1].value
-                            else None
-                        )
-                        c_phone = (
-                            _normalize_phone(row[customer_phone_col - 1].value)
-                            if customer_phone_col and row[customer_phone_col - 1].value
-                            else None
-                        )
-                        c_name = (
-                            str(row[customer_name_col - 1].value).strip()
-                            if customer_name_col and row[customer_name_col - 1].value
-                            else None
-                        )
-                        device_customer = _resolve_bulk_device_customer(
-                            db,
-                            current_user,
-                            customer_id_val=cid_val,
-                            customer_email=c_email,
-                            customer_phone=c_phone,
-                            customer_full_name=c_name,
-                        )
-                    except HTTPException as exc:
-                        errors.append(f"Row {row_idx}: {exc.detail}")
-                        failed += 1
-                        continue
+                    if selected_support_customer:
+                        device_customer = selected_support_customer
+                    else:
+                        try:
+                            cid_val = (
+                                row[customer_id_col - 1].value
+                                if customer_id_col and row[customer_id_col - 1].value is not None
+                                else None
+                            )
+                            c_email = (
+                                _normalize_email(row[customer_email_col - 1].value)
+                                if customer_email_col and row[customer_email_col - 1].value
+                                else None
+                            )
+                            c_phone = (
+                                _normalize_phone(row[customer_phone_col - 1].value)
+                                if customer_phone_col and row[customer_phone_col - 1].value
+                                else None
+                            )
+                            c_name = (
+                                str(row[customer_name_col - 1].value).strip()
+                                if customer_name_col and row[customer_name_col - 1].value
+                                else None
+                            )
+                            device_customer = _resolve_bulk_device_customer(
+                                db,
+                                current_user,
+                                customer_id_val=cid_val,
+                                customer_email=c_email,
+                                customer_phone=c_phone,
+                                customer_full_name=c_name,
+                            )
+                        except HTTPException as exc:
+                            errors.append(f"Row {row_idx}: {exc.detail}")
+                            failed += 1
+                            continue
                 else:
                     device_customer = current_user
 
@@ -947,7 +950,7 @@ async def bulk_register_devices(
         if failed:
             message_parts.append(f"{failed} row(s) failed")
 
-        return {
+        result = {
             "total": successful + failed + skipped,
             "successful": successful,
             "failed": failed,
@@ -956,6 +959,13 @@ async def bulk_register_devices(
             "errors": errors[:50] if len(errors) > 50 else errors,
             "message": ". ".join(message_parts),
         }
+        if selected_support_customer:
+            result["customer"] = {
+                "id": selected_support_customer.id,
+                "full_name": selected_support_customer.full_name,
+                "email": selected_support_customer.email,
+            }
+        return result
         
     except HTTPException:
         raise
