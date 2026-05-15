@@ -591,6 +591,72 @@ def get_service_profile_by_serial(
     }
 
 
+@router.get("/bulk-register-template")
+def bulk_register_template(
+    current_user: User = Depends(require_role([UserRole.CUSTOMER, UserRole.SUPPORT_AGENT])),
+):
+    """Download Excel template for bulk device registration (customer or support-agent columns)."""
+    if not OPENPYXL_AVAILABLE:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Excel processing library (openpyxl) is not installed. Please install it with: pip install openpyxl"
+        )
+
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.title = "Bulk Device Registration"
+
+    headers = [
+        "serial_number",
+        "model_number",
+        "product_category",
+        "brand",
+        "purchase_date",
+        "invoice_number",
+    ]
+    if current_user.role == UserRole.SUPPORT_AGENT:
+        headers.extend(["customer_email", "customer_phone", "customer_full_name", "customer_id"])
+    sheet.append(headers)
+    if current_user.role == UserRole.SUPPORT_AGENT:
+        sheet.append([
+            "SN-AC-1001",
+            "AR18TY3Q",
+            "AC",
+            "Samsung",
+            "2026-01-15",
+            "INV-1001",
+            "john@example.com",
+            "+919876543210",
+            "John Doe",
+            "",
+        ])
+        sheet.append([
+            "SN-WM-2001",
+            "FHM1207ZDL",
+            "Washing Machine",
+            "LG",
+            "2025-11-02",
+            "INV-1002",
+            "jane@example.com",
+            "+919876543211",
+            "Jane Doe",
+            "",
+        ])
+    else:
+        sheet.append(["SN-AC-1001", "AR18TY3Q", "AC", "Samsung", "2026-01-15", "INV-1001"])
+        sheet.append(["SN-WM-2001", "FHM1207ZDL", "Washing Machine", "LG", "2025-11-02", "INV-1002"])
+
+    buffer = io.BytesIO()
+    workbook.save(buffer)
+    buffer.seek(0)
+
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=bulk_device_registration_template.xlsx"},
+    )
+
+
 @router.get("/{device_id}")
 def get_device(
     device_id: int,
@@ -889,68 +955,3 @@ async def bulk_register_devices(
             detail=f"Error processing Excel file: {str(e)}"
         )
 
-
-@router.get("/bulk-register-template")
-def bulk_register_template(
-    current_user: User = Depends(require_role([UserRole.CUSTOMER, UserRole.SUPPORT_AGENT])),
-):
-    """Download Excel template for bulk device registration (customer or support-agent columns)."""
-    if not OPENPYXL_AVAILABLE:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Excel processing library (openpyxl) is not installed. Please install it with: pip install openpyxl"
-        )
-
-    workbook = openpyxl.Workbook()
-    sheet = workbook.active
-    sheet.title = "Bulk Device Registration"
-
-    headers = [
-        "serial_number",
-        "model_number",
-        "product_category",
-        "brand",
-        "purchase_date",
-        "invoice_number",
-    ]
-    if current_user.role == UserRole.SUPPORT_AGENT:
-        headers.extend(["customer_email", "customer_phone", "customer_full_name", "customer_id"])
-    sheet.append(headers)
-    if current_user.role == UserRole.SUPPORT_AGENT:
-        sheet.append([
-            "SN-AC-1001",
-            "AR18TY3Q",
-            "AC",
-            "Samsung",
-            "2026-01-15",
-            "INV-1001",
-            "john@example.com",
-            "+919876543210",
-            "John Doe",
-            "",
-        ])
-        sheet.append([
-            "SN-WM-2001",
-            "FHM1207ZDL",
-            "Washing Machine",
-            "LG",
-            "2025-11-02",
-            "INV-1002",
-            "jane@example.com",
-            "+919876543211",
-            "Jane Doe",
-            "",
-        ])
-    else:
-        sheet.append(["SN-AC-1001", "AR18TY3Q", "AC", "Samsung", "2026-01-15", "INV-1001"])
-        sheet.append(["SN-WM-2001", "FHM1207ZDL", "Washing Machine", "LG", "2025-11-02", "INV-1002"])
-
-    buffer = io.BytesIO()
-    workbook.save(buffer)
-    buffer.seek(0)
-
-    return StreamingResponse(
-        buffer,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": "attachment; filename=bulk_device_registration_template.xlsx"},
-    )
