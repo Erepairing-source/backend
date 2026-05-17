@@ -23,8 +23,10 @@ except ImportError:
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.permissions import require_role
-from app.services import razorpay_service
-from app.services.subscription_billing import first_billing_date_after_setup
+from app.services.subscription_billing import (
+    apply_complimentary_subscription_fields,
+    ensure_complimentary_period,
+)
 from app.core.data_isolation import check_organization_access, enforce_organization_isolation
 from app.core.location_resolution import resolve_location_ids, int_or_none
 from app.models.user import User, UserRole
@@ -126,6 +128,8 @@ def get_org_admin_dashboard(
         
         subscription_data = None
         if subscription:
+            if ensure_complimentary_period(db, subscription):
+                db.commit()
             days_until_end = None
             if subscription.end_date:
                 end = subscription.end_date
@@ -1765,54 +1769,46 @@ def upgrade_subscription(
         current_subscription.current_price = float(subscription_price)
         current_subscription.start_date = start_date
         current_subscription.end_date = end_date
-        if razorpay_service.is_razorpay_configured() and not current_subscription.autopay_setup_complete:
-            current_subscription.status = "pending_autopay"
-            if not current_subscription.next_billing_date:
-                current_subscription.next_billing_date = first_billing_date_after_setup(start_date)
-        else:
-            current_subscription.status = "active"
-        
+        apply_complimentary_subscription_fields(current_subscription, start_date)
         db.commit()
         db.refresh(current_subscription)
-        
+        from app.services.subscription_payment_service import autopay_status_payload
+
         return {
             "id": current_subscription.id,
             "plan_name": plan.name,
             "billing_period": billing_period.value,
             "price": float(subscription_price),
             "message": "Subscription upgraded successfully",
-            "requires_autopay_setup": (
-                razorpay_service.is_razorpay_configured()
-                and not current_subscription.autopay_setup_complete
-            ),
+            "requires_autopay_setup": False,
+            **autopay_status_payload(current_subscription),
         }
     else:
-        use_razorpay = razorpay_service.is_razorpay_configured()
         subscription = Subscription(
             organization_id=current_user.organization_id,
             plan_id=plan.id,
             billing_period=billing_period,
             current_price=float(subscription_price),
             currency="INR",
-            status="pending_autopay" if use_razorpay else "active",
+            status="active",
             start_date=start_date,
             end_date=end_date,
-            next_billing_date=first_billing_date_after_setup(start_date) if use_razorpay else None,
-            billing_interval_months=int(settings.RAZORPAY_BILLING_INTERVAL_MONTHS or 6),
             autopay_setup_complete=False,
         )
-        
+        apply_complimentary_subscription_fields(subscription, start_date)
         db.add(subscription)
         db.commit()
         db.refresh(subscription)
-        
+        from app.services.subscription_payment_service import autopay_status_payload
+
         return {
             "id": subscription.id,
             "plan_name": plan.name,
             "billing_period": billing_period.value,
             "price": float(subscription_price),
             "message": "Subscription created successfully",
-            "requires_autopay_setup": use_razorpay,
+            "requires_autopay_setup": False,
+            **autopay_status_payload(subscription),
         }
 
 

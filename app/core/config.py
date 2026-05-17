@@ -169,6 +169,11 @@ class Settings(BaseSettings):
     # Daily reminder job: POST /api/v1/jobs/reminders/run with header X-Reminder-Secret
     REMINDER_JOB_SECRET: Optional[str] = None
 
+    # Billing: False = 6-month complimentary access for all orgs (no Razorpay UI/charges).
+    # Set PAYMENTS_ENABLED=true when launching online payments.
+    PAYMENTS_ENABLED: bool = False
+    COMPLIMENTARY_ACCESS_MONTHS: int = 6
+
     # Razorpay (set in .env only — never commit live keys)
     RAZORPAY_KEY_ID: Optional[str] = None
     RAZORPAY_KEY_SECRET: Optional[str] = None

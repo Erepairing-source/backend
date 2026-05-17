@@ -15,7 +15,10 @@ from app.models.user import User, UserRole
 from app.services import razorpay_service
 from app.services.subscription_billing import (
     advance_billing_date,
+    complimentary_access_months,
+    complimentary_notice,
     first_billing_date_after_setup,
+    payments_enabled,
     subscription_charge_amount_inr,
     subscription_charge_amount_paise,
 )
@@ -33,32 +36,42 @@ def _subscription_for_org(db: Session, organization_id: int) -> Subscription | N
 
 
 def autopay_status_payload(subscription: Subscription | None) -> dict:
+    pay_on = payments_enabled() and razorpay_service.is_razorpay_configured()
+    months = complimentary_access_months()
     if not subscription:
         return {
-            "configured": razorpay_service.is_razorpay_configured(),
+            "payments_enabled": pay_on,
+            "complimentary_access": not pay_on,
+            "configured": pay_on,
             "autopay_setup_complete": False,
             "requires_autopay_setup": False,
             "next_billing_date": None,
-            "billing_interval_months": int(settings.RAZORPAY_BILLING_INTERVAL_MONTHS or 6),
+            "complimentary_until": None,
+            "billing_interval_months": months,
             "next_charge_amount_inr": None,
+            "payment_notice": None,
         }
-    next_amt = subscription_charge_amount_inr(subscription) if subscription else None
+    next_amt = subscription_charge_amount_inr(subscription) if pay_on else None
+    next_bill = (
+        subscription.next_billing_date.isoformat() if subscription.next_billing_date else None
+    )
     return {
-        "configured": razorpay_service.is_razorpay_configured(),
+        "payments_enabled": pay_on,
+        "complimentary_access": not pay_on,
+        "configured": pay_on,
         "autopay_setup_complete": bool(subscription.autopay_setup_complete),
         "requires_autopay_setup": (
-            razorpay_service.is_razorpay_configured() and not subscription.autopay_setup_complete
+            pay_on and not subscription.autopay_setup_complete
         ),
         "status": subscription.status,
-        "next_billing_date": subscription.next_billing_date.isoformat()
-        if subscription.next_billing_date
-        else None,
-        "billing_interval_months": subscription.billing_interval_months
-        or int(settings.RAZORPAY_BILLING_INTERVAL_MONTHS or 6),
+        "next_billing_date": next_bill,
+        "complimentary_until": next_bill if not pay_on else None,
+        "billing_interval_months": subscription.billing_interval_months or months,
         "next_charge_amount_inr": next_amt,
         "plan_name": subscription.plan.name if subscription.plan else None,
         "payment_method": subscription.payment_method,
         "autopay_method": subscription.autopay_method,
+        "payment_notice": complimentary_notice(subscription),
     }
 
 
@@ -189,6 +202,13 @@ def complete_autopay_setup(
 
 def charge_due_subscriptions(db: Session) -> dict:
     """Charge subscriptions where next_billing_date <= now and autopay is configured."""
+    if not payments_enabled():
+        return {
+            "charged": 0,
+            "failed": 0,
+            "errors": [],
+            "message": "Payments are disabled. Organizations are on complimentary access.",
+        }
     now = datetime.now(timezone.utc)
     due = (
         db.query(Subscription)

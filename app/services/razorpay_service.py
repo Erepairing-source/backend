@@ -20,6 +20,8 @@ class RazorpayNotConfiguredError(RuntimeError):
 
 
 def is_razorpay_configured() -> bool:
+    if not settings.PAYMENTS_ENABLED:
+        return False
     return bool(settings.RAZORPAY_KEY_ID and settings.RAZORPAY_KEY_SECRET)
 
 
